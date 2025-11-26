@@ -4,11 +4,9 @@
   "workspaces": {
     "": {
       "name": "alphalabs",
-      "dependencies": {
-        "concurrently": "^9.2.1",
-      },
       "devDependencies": {
         "bun": "^1.0.0",
+        "concurrently": "^9.2.1",
       },
     },
     "frontend": {
