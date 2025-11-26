@@ -1,19 +1,27 @@
-from flask import Flask, jsonify
-from flask_cors import CORS
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 import os
 from dotenv import load_dotenv
 
 load_dotenv()
 
-app = Flask(__name__)
-CORS(app, origins=["http://localhost:3000"])
+app = FastAPI()
 
-@app.route('/api/health', methods=['GET'])
+# Configure CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+@app.get('/api/health')
 def health():
-    return jsonify({"status": "ok", "service": "backend"})
+    return {"status": "ok", "service": "backend"}
 
-@app.route('/api/openrouter/chat', methods=['POST'])
-def openrouter_chat():
+@app.post('/api/openrouter/chat')
+def openrouter_chat(request_data: dict):
     """
     Proxy endpoint for OpenRouter API
     """
@@ -21,11 +29,7 @@ def openrouter_chat():
     
     api_key = os.getenv('OPENROUTER_API_KEY')
     if not api_key:
-        return jsonify({"error": "OpenRouter API key not configured"}), 500
-    
-    # Get request data
-    from flask import request
-    data = request.get_json()
+        raise HTTPException(status_code=500, detail="OpenRouter API key not configured")
     
     # Forward to OpenRouter
     headers = {
@@ -39,14 +43,15 @@ def openrouter_chat():
         response = requests.post(
             "https://openrouter.ai/api/v1/chat/completions",
             headers=headers,
-            json=data,
+            json=request_data,
             timeout=30
         )
-        return jsonify(response.json()), response.status_code
+        return response.json()
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == '__main__':
+    import uvicorn
     port = int(os.getenv('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=True)
+    uvicorn.run("app:app", host='0.0.0.0', port=port, reload=True)
 
