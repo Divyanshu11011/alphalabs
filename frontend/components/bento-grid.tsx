@@ -6,6 +6,7 @@ import { Marquee } from './ui/marquee';
 import { AnimatedRoadmap } from './animated-roadmap';
 import { useState } from 'react';
 import Link from 'next/link';
+import { ChartBar, Shield, Timer } from '@phosphor-icons/react';
 
 const containerVariants = {
   hidden: { opacity: 0 },
@@ -266,9 +267,9 @@ function TileSafetyControls() {
   const [safetyEnabled, setSafetyEnabled] = useState(true);
 
   const safetyFeatures = [
-    { text: 'Throttled trading frequency', icon: '📊' },
-    { text: 'Controlled environment for experimentation', icon: '🛡️' },
-    { text: 'Dummy cash prevents real losses', icon: '⏱️' },
+    { text: 'Throttled trading frequency', icon: ChartBar },
+    { text: 'Controlled environment for experimentation', icon: Shield },
+    { text: 'Dummy cash prevents real losses', icon: Timer },
   ];
 
   return (
@@ -308,7 +309,7 @@ function TileSafetyControls() {
             animate={{ opacity: 1, x: 0 }}
             transition={{ delay: 0.1 + index * 0.1 }}
           >
-            <span className="text-sm">{feature.icon}</span>
+            <feature.icon size={18} weight="duotone" className="shrink-0 mt-0.5 text-emerald-400" />
             <span className="leading-relaxed">{feature.text}</span>
           </motion.li>
         ))}

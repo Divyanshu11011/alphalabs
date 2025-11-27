@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono, Syne } from "next/font/google";
+import { Geist, Geist_Mono, Syne, JetBrains_Mono } from "next/font/google";
 import { ClerkProvider } from "@clerk/nextjs";
+import { ThemeProvider } from "@/components/providers/theme-provider";
+import { Toaster } from "@/components/ui/sonner";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -22,6 +24,12 @@ const syne = Syne({
   display: "swap",
 });
 
+const jetbrainsMono = JetBrains_Mono({
+  variable: "--font-jetbrains",
+  subsets: ["latin"],
+  display: "swap",
+});
+
 export const metadata: Metadata = {
   title: "AlphaLab — The Wind Tunnel for Trading AIs",
   description: "Verify an AI trading agent's skill with repeatable historical simulations and an auditable Certificate of Intelligence. No-code sandbox, BYO model key, verifiable results.",
@@ -34,9 +42,12 @@ export default function RootLayout({
 }>) {
   return (
     <ClerkProvider>
-      <html lang="en" className="dark">
-        <body className={`${geistSans.variable} ${geistMono.variable} ${syne.variable} bg-black`}>
-          {children}
+      <html lang="en" suppressHydrationWarning>
+        <body className={`${geistSans.variable} ${geistMono.variable} ${syne.variable} ${jetbrainsMono.variable} bg-background`}>
+          <ThemeProvider>
+            {children}
+            <Toaster richColors position="bottom-right" />
+          </ThemeProvider>
         </body>
       </html>
     </ClerkProvider>

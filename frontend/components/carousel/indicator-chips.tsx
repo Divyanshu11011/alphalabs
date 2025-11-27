@@ -16,11 +16,12 @@ export function IndicatorChips() {
   
   return (
     <div className="w-full h-full flex items-center justify-center p-4 overflow-hidden">
-      <div className="flex flex-wrap gap-2 justify-center">
+      {/* Horizontally scrollable on small screens, wrap on larger */}
+      <div className="flex gap-2 overflow-x-auto pb-2 sm:flex-wrap sm:justify-center sm:overflow-visible scrollbar-thin">
         {indicators.map((ind, index) => (
           <motion.div
             key={ind.name}
-            className="bg-gradient-to-br from-white/10 to-white/5 border border-white/20 px-3 py-2 rounded-lg flex items-center gap-2 shadow-lg"
+            className="shrink-0 bg-gradient-to-br from-white/10 to-white/5 border border-white/20 px-3 py-2 rounded-lg flex items-center gap-2 shadow-lg"
             initial={{ opacity: 0, scale: 0.8, y: 20 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
             transition={{ 
