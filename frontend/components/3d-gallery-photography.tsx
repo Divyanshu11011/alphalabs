@@ -205,6 +205,8 @@ function GalleryScene({
 	const [scrollVelocity, setScrollVelocity] = useState(0);
 	const [autoPlay, setAutoPlay] = useState(true);
 	const lastInteraction = useRef(Date.now());
+	const scrollPosition = useRef(0);
+	const maxScrollCycles = 1; // Limit to 3 full cycles through images
 
 	const normalizedImages = useMemo(
 		() =>
@@ -274,31 +276,49 @@ function GalleryScene({
 		}));
 	}, [depthRange, spatialPositions, totalImages, visibleCount]);
 
-	// Handle scroll input
+	const totalScrollRange = DEFAULT_DEPTH_RANGE * maxScrollCycles;
+
+	// Handle scroll input with limits - pass through to page when at limits
 	const handleWheel = useCallback(
 		(event: WheelEvent) => {
+			const newVelocity = event.deltaY * 0.01 * speed;
+			
+			// At start and trying to scroll up - let page scroll
+			if (scrollPosition.current <= 0 && newVelocity < 0) {
+				return; // Don't preventDefault, let page scroll
+			}
+			// At end and trying to scroll down - let page scroll
+			if (scrollPosition.current >= totalScrollRange && newVelocity > 0) {
+				return; // Don't preventDefault, let page scroll
+			}
+			
+			// Within gallery range - capture scroll
 			event.preventDefault();
-			setScrollVelocity((prev) => prev + event.deltaY * 0.01 * speed);
+			setScrollVelocity((prev) => prev + newVelocity);
 			setAutoPlay(false);
 			lastInteraction.current = Date.now();
 		},
-		[speed]
+		[speed, totalScrollRange]
 	);
 
-	// Handle keyboard input
+	// Handle keyboard input with limits
 	const handleKeyDown = useCallback(
 		(event: KeyboardEvent) => {
 			if (event.key === 'ArrowUp' || event.key === 'ArrowLeft') {
+				if (scrollPosition.current <= 0) return; // Let default behavior
+				event.preventDefault();
 				setScrollVelocity((prev) => prev - 2 * speed);
 				setAutoPlay(false);
 				lastInteraction.current = Date.now();
 			} else if (event.key === 'ArrowDown' || event.key === 'ArrowRight') {
+				if (scrollPosition.current >= totalScrollRange) return; // Let default behavior
+				event.preventDefault();
 				setScrollVelocity((prev) => prev + 2 * speed);
 				setAutoPlay(false);
 				lastInteraction.current = Date.now();
 			}
 		},
-		[speed]
+		[speed, totalScrollRange]
 	);
 
 	useEffect(() => {
@@ -325,9 +345,23 @@ function GalleryScene({
 	}, []);
 
 	useFrame((state, delta) => {
-		// Apply auto-play
-		if (autoPlay) {
+		// Apply auto-play only if not at limits
+		if (autoPlay && scrollPosition.current < totalScrollRange) {
 			setScrollVelocity((prev) => prev + 0.3 * delta);
+		}
+
+		// Update scroll position tracking
+		scrollPosition.current += scrollVelocity * delta * 10;
+		
+		// Clamp scroll position to limits (but don't kill velocity - let user scroll back)
+		if (scrollPosition.current < 0) {
+			scrollPosition.current = 0;
+			// Only stop if still trying to go negative
+			if (scrollVelocity < 0) setScrollVelocity(0);
+		} else if (scrollPosition.current > totalScrollRange) {
+			scrollPosition.current = totalScrollRange;
+			// Only stop if still trying to go past max
+			if (scrollVelocity > 0) setScrollVelocity(0);
 		}
 
 		// Damping

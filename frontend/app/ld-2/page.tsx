@@ -3,7 +3,11 @@ import { HeroShader } from "@/components/hero-shader";
 import LD2Navbar from "@/components/ld2-navbar";
 import LD2HeroContent from "@/components/ld2-hero-content";
 import LD2DashboardPreview from "@/components/ld2-dashboard-preview";
-import LD2GallerySection from "@/components/ld2-gallery-section";
+// import LD2GallerySection from "@/components/ld2-gallery-section";
+import LD2CursorSection from "@/components/ld2-cursor-section";
+import LD2CardSwapSection from "@/components/ld2-cardswap-section";
+import LD2LogoCarouselSection from "@/components/ld2-logo-carousel-section";
+import LD2CurvedLoopSection from "@/components/ld2-curved-loop-section";
 
 export default function LD2Page() {
   return (
@@ -11,7 +15,11 @@ export default function LD2Page() {
       <LD2Navbar />
       <LD2HeroContent />
       <LD2DashboardPreview />
-      <LD2GallerySection />
+      {/* <LD2GallerySection /> */}
+      <LD2CardSwapSection />
+      <LD2LogoCarouselSection />
+      <LD2CurvedLoopSection />
+      <LD2CursorSection />
       <div
         className="am-shader-container"
         style={{

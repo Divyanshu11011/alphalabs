@@ -22,7 +22,7 @@ export default function LD2GallerySection() {
         visibleCount={12}
         className="h-full w-full"
       />
-      <div className="absolute inset-0 pointer-events-none flex items-end justify-center text-center px-3 pb-12 mix-blend-exclusion text-white">
+      <div className="absolute inset-0 pointer-events-none flex items-center justify-center text-center px-3 mix-blend-exclusion text-white">
         <h1 className="font-serif text-2xl md:text-5xl tracking-tight max-w-4xl">
           <span className="italic">AlphaLabs</span>
         </h1>
