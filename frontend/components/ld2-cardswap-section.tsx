@@ -453,7 +453,7 @@ export default function LD2CardSwapSection() {
         </div>
         
         {/* Right side - CardSwap */}
-        <div className="relative h-[500px] w-[400px] mr-12 md:mr-24">
+        <div className="relative h-[520px] w-[440px] mr-0 md:mr-4">
           <CardSwap
             cardDistance={30}
             verticalDistance={60}
