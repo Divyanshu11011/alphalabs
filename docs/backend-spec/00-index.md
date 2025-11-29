@@ -209,9 +209,9 @@ uvicorn app:app --reload --port 5000
 - [ ] Agent validation
 
 ### Phase 3: Trading Engine
-- [ ] Indicator calculator
-- [ ] AI trader integration
-- [ ] Position manager
+- [x] Indicator calculator
+- [-] AI trader integration
+- [x] Position manager
 - [ ] Backtest engine
 
 ### Phase 4: WebSocket
