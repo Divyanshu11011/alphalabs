@@ -1,4 +1,5 @@
 import { useAuth } from "@clerk/nextjs";
+import { useCallback } from "react";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:5000";
 
@@ -46,10 +47,10 @@ export async function apiRequest<T>(
 export const useApi = () => {
     const { getToken } = useAuth();
 
-    const request = async <T>(endpoint: string, options: ApiOptions = {}) => {
+    const request = useCallback(async <T>(endpoint: string, options: ApiOptions = {}) => {
         const token = await getToken();
         return apiRequest<T>(endpoint, token, options);
-    };
+    }, [getToken]);
 
     return { request };
 };

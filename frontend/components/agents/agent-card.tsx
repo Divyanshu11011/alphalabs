@@ -1,6 +1,6 @@
 "use client";
 
-import { History, Edit, MoreVertical, Copy, FileDown, Trash2, Bot } from "lucide-react";
+import { History, Edit, MoreVertical, Copy, FileDown, Trash2, Bot, Loader2 } from "lucide-react";
 import { Crosshair, Eye } from "@phosphor-icons/react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -15,17 +15,11 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
-
-interface Agent {
-  id: string;
-  name: string;
-  model: string;
-  mode: "monk" | "omni";
-  indicators: string[];
-  testsRun: number;
-  bestPnL: number | null;
-  createdAt: Date;
-}
+import type { Agent } from "@/hooks/use-agents";
+import { useAgents } from "@/hooks/use-agents";
+import { useToast } from "@/hooks/use-toast";
+import { DeleteAgentDialog } from "./delete-agent-dialog";
+import { useState } from "react";
 
 interface AgentCardProps {
   agent: Agent;
@@ -83,18 +77,18 @@ export function AgentCard({ agent, variant = "grid" }: AgentCardProps) {
 
           {/* Stats */}
           <div className="hidden text-right sm:block">
-            <p className="font-mono text-sm">{agent.testsRun} tests</p>
-            {agent.bestPnL !== null ? (
+            <p className="font-mono text-sm">{agent.tests_run} tests</p>
+            {agent.best_pnl !== null && agent.best_pnl !== undefined ? (
               <p
                 className={cn(
                   "font-mono text-xs",
-                  agent.bestPnL >= 0
+                  agent.best_pnl >= 0
                     ? "text-[hsl(var(--accent-profit))]"
                     : "text-[hsl(var(--accent-red))]"
                 )}
               >
-                Best: {agent.bestPnL >= 0 ? "+" : ""}
-                {agent.bestPnL}%
+                Best: {agent.best_pnl >= 0 ? "+" : ""}
+                {agent.best_pnl.toFixed(1)}%
               </p>
             ) : (
               <p className="text-xs text-muted-foreground">--</p>
@@ -172,21 +166,21 @@ export function AgentCard({ agent, variant = "grid" }: AgentCardProps) {
         {/* Stats */}
         <div className="mt-3 flex items-center justify-between text-sm">
           <span className="text-muted-foreground">
-            Tests: <span className="font-mono text-foreground">{agent.testsRun}</span>
+            Tests: <span className="font-mono text-foreground">{agent.tests_run}</span>
           </span>
           <span className="text-muted-foreground">
             Best:{" "}
-            {agent.bestPnL !== null ? (
+            {agent.best_pnl !== null && agent.best_pnl !== undefined ? (
               <span
                 className={cn(
                   "font-mono",
-                  agent.bestPnL >= 0
+                  agent.best_pnl >= 0
                     ? "text-[hsl(var(--accent-profit))]"
                     : "text-[hsl(var(--accent-red))]"
                 )}
               >
-                {agent.bestPnL >= 0 ? "+" : ""}
-                {agent.bestPnL}%
+                {agent.best_pnl >= 0 ? "+" : ""}
+                {agent.best_pnl.toFixed(1)}%
               </span>
             ) : (
               <span className="font-mono text-foreground">--</span>
@@ -223,29 +217,70 @@ export function AgentCard({ agent, variant = "grid" }: AgentCardProps) {
 }
 
 function AgentMoreMenu({ agentId, agentName }: { agentId: string; agentName: string }) {
+  const { duplicateAgent } = useAgents();
+  const { toast } = useToast();
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [isDuplicating, setIsDuplicating] = useState(false);
+
+  const handleDuplicate = async () => {
+    setIsDuplicating(true);
+    try {
+      const newName = `${agentName}-copy`;
+      await duplicateAgent(agentId, newName);
+      toast({
+        title: "Agent duplicated",
+        description: `Created ${newName} from ${agentName}`,
+      });
+    } catch (err) {
+      toast({
+        title: "Error",
+        description: err instanceof Error ? err.message : "Failed to duplicate agent",
+        variant: "destructive",
+      });
+    } finally {
+      setIsDuplicating(false);
+    }
+  };
+
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="icon" className="h-8 w-8">
-          <MoreVertical className="h-4 w-4" />
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end">
-        <DropdownMenuItem>
-          <Copy className="mr-2 h-4 w-4" />
-          Duplicate Agent
-        </DropdownMenuItem>
-        <DropdownMenuItem>
-          <FileDown className="mr-2 h-4 w-4" />
-          Export Config
-        </DropdownMenuItem>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem className="text-destructive focus:text-destructive">
-          <Trash2 className="mr-2 h-4 w-4" />
-          Delete Agent
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
+    <>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button variant="ghost" size="icon" className="h-8 w-8">
+            <MoreVertical className="h-4 w-4" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          <DropdownMenuItem onClick={handleDuplicate} disabled={isDuplicating}>
+            {isDuplicating ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <Copy className="mr-2 h-4 w-4" />
+            )}
+            Duplicate Agent
+          </DropdownMenuItem>
+          <DropdownMenuItem>
+            <FileDown className="mr-2 h-4 w-4" />
+            Export Config
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            className="text-destructive focus:text-destructive"
+            onClick={() => setShowDeleteDialog(true)}
+          >
+            <Trash2 className="mr-2 h-4 w-4" />
+            Delete Agent
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+
+      <DeleteAgentDialog
+        agentId={agentId}
+        agentName={agentName}
+        open={showDeleteDialog}
+        onOpenChange={setShowDeleteDialog}
+      />
+    </>
   );
 }
 
