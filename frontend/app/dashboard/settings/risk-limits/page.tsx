@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useSettings } from "@/hooks/use-settings";
 import { AlertTriangle } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -9,6 +10,7 @@ import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
 
 export default function RiskLimitsSettingsPage() {
+  const { settings, updateSettings, isSaving } = useSettings();
   const [limits, setLimits] = useState({
     maxPositionSize: 50,
     maxLeverage: 5,
@@ -16,6 +18,18 @@ export default function RiskLimitsSettingsPage() {
     maxDailyLoss: 10,
     maxTotalDrawdown: 20,
   });
+
+  useEffect(() => {
+    if (settings) {
+      setLimits({
+        maxPositionSize: settings.max_position_size_pct,
+        maxLeverage: settings.max_leverage,
+        maxLossPerTrade: settings.max_loss_per_trade_pct,
+        maxDailyLoss: settings.max_daily_loss_pct,
+        maxTotalDrawdown: settings.max_total_drawdown_pct,
+      });
+    }
+  }, [settings]);
 
   return (
     <div className="space-y-6">
@@ -145,8 +159,20 @@ export default function RiskLimitsSettingsPage() {
 
       <div className="flex justify-between">
         <Button variant="outline">Reset to Defaults</Button>
-        <Button className="bg-primary text-primary-foreground hover:bg-primary/90">
-          Save Risk Limits
+        <Button
+          onClick={async () => {
+            await updateSettings({
+              max_position_size_pct: limits.maxPositionSize,
+              max_leverage: limits.maxLeverage,
+              max_loss_per_trade_pct: limits.maxLossPerTrade,
+              max_daily_loss_pct: limits.maxDailyLoss,
+              max_total_drawdown_pct: limits.maxTotalDrawdown,
+            });
+          }}
+          disabled={isSaving}
+          className="bg-primary text-primary-foreground hover:bg-primary/90"
+        >
+          {isSaving ? "Saving..." : "Save Risk Limits"}
         </Button>
       </div>
     </div>

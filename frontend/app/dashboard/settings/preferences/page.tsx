@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useSettings } from "@/hooks/use-settings";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,9 +14,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Progress } from "@/components/ui/progress";
 
 export default function PreferencesSettingsPage() {
-  const [preferences, setPreferences] = useState({
+  const { settings, isLoading, isSaving, updateSettings } = useSettings();
+  const [localSettings, setLocalSettings] = useState({
     defaultAsset: "btc-usdt",
     defaultTimeframe: "1h",
     defaultCapital: "10000",
@@ -23,6 +26,41 @@ export default function PreferencesSettingsPage() {
     safetyModeDefault: true,
     allowLeverageDefault: false,
   });
+
+  useEffect(() => {
+    if (settings) {
+      setLocalSettings({
+        defaultAsset: settings.default_asset || "btc-usdt",
+        defaultTimeframe: settings.default_timeframe || "1h",
+        defaultCapital: settings.default_capital?.toString() || "10000",
+        defaultSpeed: settings.default_playback_speed || "normal",
+        safetyModeDefault: settings.safety_mode_default,
+        allowLeverageDefault: settings.allow_leverage_default,
+      });
+    }
+  }, [settings]);
+
+  const handleSave = async () => {
+    await updateSettings({
+      default_asset: localSettings.defaultAsset,
+      default_timeframe: localSettings.defaultTimeframe,
+      default_capital: parseFloat(localSettings.defaultCapital),
+      default_playback_speed: localSettings.defaultSpeed,
+      safety_mode_default: localSettings.safetyModeDefault,
+      allow_leverage_default: localSettings.allowLeverageDefault,
+    });
+  };
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <div className="w-full max-w-md space-y-4">
+          <div className="text-center text-sm text-muted-foreground">Loading preferences...</div>
+          <Progress value={undefined} className="w-full" />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -39,9 +77,9 @@ export default function PreferencesSettingsPage() {
             <div className="space-y-2">
               <Label>Default Asset</Label>
               <Select
-                value={preferences.defaultAsset}
+                value={localSettings.defaultAsset}
                 onValueChange={(value) =>
-                  setPreferences({ ...preferences, defaultAsset: value })
+                  setLocalSettings({ ...localSettings, defaultAsset: value })
                 }
               >
                 <SelectTrigger>
@@ -57,9 +95,9 @@ export default function PreferencesSettingsPage() {
             <div className="space-y-2">
               <Label>Default Timeframe</Label>
               <Select
-                value={preferences.defaultTimeframe}
+                value={localSettings.defaultTimeframe}
                 onValueChange={(value) =>
-                  setPreferences({ ...preferences, defaultTimeframe: value })
+                  setLocalSettings({ ...localSettings, defaultTimeframe: value })
                 }
               >
                 <SelectTrigger>
@@ -79,9 +117,9 @@ export default function PreferencesSettingsPage() {
             <Label>Default Starting Capital</Label>
             <Input
               type="number"
-              value={preferences.defaultCapital}
+              value={localSettings.defaultCapital}
               onChange={(e) =>
-                setPreferences({ ...preferences, defaultCapital: e.target.value })
+                setLocalSettings({ ...localSettings, defaultCapital: e.target.value })
               }
               className="max-w-xs font-mono"
             />
@@ -90,9 +128,9 @@ export default function PreferencesSettingsPage() {
           <div className="space-y-2">
             <Label>Default Playback Speed (Backtest)</Label>
             <Select
-              value={preferences.defaultSpeed}
+              value={localSettings.defaultSpeed}
               onValueChange={(value) =>
-                setPreferences({ ...preferences, defaultSpeed: value })
+                setLocalSettings({ ...localSettings, defaultSpeed: value })
               }
             >
               <SelectTrigger className="max-w-xs">
@@ -117,10 +155,10 @@ export default function PreferencesSettingsPage() {
           <div className="flex items-center space-x-2">
             <Checkbox
               id="safetyMode"
-              checked={preferences.safetyModeDefault}
+              checked={localSettings.safetyModeDefault}
               onCheckedChange={(checked) =>
-                setPreferences({
-                  ...preferences,
+                setLocalSettings({
+                  ...localSettings,
                   safetyModeDefault: checked as boolean,
                 })
               }
@@ -138,10 +176,10 @@ export default function PreferencesSettingsPage() {
           <div className="flex items-center space-x-2">
             <Checkbox
               id="leverage"
-              checked={preferences.allowLeverageDefault}
+              checked={localSettings.allowLeverageDefault}
               onCheckedChange={(checked) =>
-                setPreferences({
-                  ...preferences,
+                setLocalSettings({
+                  ...localSettings,
                   allowLeverageDefault: checked as boolean,
                 })
               }
@@ -157,8 +195,12 @@ export default function PreferencesSettingsPage() {
       </Card>
 
       <div className="flex justify-end">
-        <Button className="bg-primary text-primary-foreground hover:bg-primary/90">
-          Save Preferences
+        <Button
+          onClick={handleSave}
+          disabled={isSaving}
+          className="bg-primary text-primary-foreground hover:bg-primary/90"
+        >
+          {isSaving ? "Saving..." : "Save Preferences"}
         </Button>
       </div>
     </div>

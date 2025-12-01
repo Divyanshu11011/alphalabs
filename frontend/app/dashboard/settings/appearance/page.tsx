@@ -2,6 +2,7 @@
 
 import { useTheme } from "next-themes";
 import { useEffect, useState } from "react";
+import { useSettings } from "@/hooks/use-settings";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
@@ -14,6 +15,7 @@ import type { AccentColor } from "@/types";
 export default function AppearanceSettingsPage() {
   const { theme, setTheme } = useTheme();
   const { accentColor, setAccentColor, sidebarCollapsed, setSidebarCollapsed } = useUIStore();
+  const { updateSettings, isSaving } = useSettings();
   const [mounted, setMounted] = useState(false);
 
   // Avoid hydration mismatch
@@ -154,10 +156,17 @@ export default function AppearanceSettingsPage() {
 
       <div className="flex justify-end">
         <Button
-          onClick={() => toast.success("Preferences saved!")}
+          onClick={async () => {
+            await updateSettings({
+              theme: theme as string,
+              accent_color: accentColor,
+              sidebar_collapsed: sidebarCollapsed,
+            });
+          }}
+          disabled={isSaving}
           className="bg-primary text-primary-foreground hover:bg-primary/90"
         >
-          Save Preferences
+          {isSaving ? "Saving..." : "Save Preferences"}
         </Button>
       </div>
     </div>

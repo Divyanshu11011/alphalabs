@@ -21,7 +21,7 @@ import logging
 
 from database import get_db
 from models import User, UserSettings
-from schemas import UserResponse, UserSettingsResponse, UserSettingsUpdate
+from schemas import UserResponse, UserSettingsResponse, UserSettingsUpdate, UserProfileUpdate
 from dependencies import get_current_user
 from auth import verify_clerk_token, get_user_id_from_token
 
@@ -131,6 +131,44 @@ async def sync_user(
 @router.get("/me", response_model=UserResponse)
 async def get_me(current_user: User = Depends(get_current_user)):
     return {"user": current_user}
+
+# 2.5 PUT /api/users/me
+@router.put("/me", response_model=UserResponse)
+async def update_me(
+    profile_update: UserProfileUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Update user profile fields.
+    Currently supports: timezone
+    Note: first_name, last_name, username, email are managed via Clerk.
+    """
+    try:
+        # Validate timezone if provided
+        if profile_update.timezone is not None:
+            profile_update.validate_timezone(profile_update.timezone)
+        
+        # Update fields
+        update_data = profile_update.model_dump(exclude_unset=True)
+        for key, value in update_data.items():
+            setattr(current_user, key, value)
+        
+        await db.commit()
+        await db.refresh(current_user)
+        
+        return {"user": current_user}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except SQLAlchemyError as e:
+        await db.rollback()
+        logger.error(f"Database error updating user profile: {e}")
+        raise HTTPException(status_code=500, detail="Database error occurred")
+    except Exception as e:
+        await db.rollback()
+        logger.error(f"Error updating user profile: {e}")
+        raise HTTPException(status_code=500, detail=f"Error updating profile: {str(e)}")
+
 
 # 3. GET /api/users/me/settings
 @router.get("/me/settings", response_model=UserSettingsResponse)

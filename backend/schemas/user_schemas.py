@@ -35,6 +35,24 @@ class User(UserBase):
 
     model_config = ConfigDict(from_attributes=True)
 
+class UserProfileUpdate(BaseModel):
+    """Schema for updating user profile fields."""
+    timezone: Optional[str] = None
+    
+    @classmethod
+    def validate_timezone(cls, v: Optional[str]) -> Optional[str]:
+        """Validate timezone string against pytz timezones."""
+        if v is not None:
+            try:
+                import pytz
+                if v not in pytz.all_timezones:
+                    raise ValueError(f"Invalid timezone: {v}")
+            except ImportError:
+                # If pytz not available, skip validation
+                pass
+        return v
+
+
 # --- User Settings Schemas ---
 class UserSettingsBase(BaseModel):
     theme: Optional[str] = "dark"
