@@ -10,85 +10,30 @@ Data Flow:
     - Processing: Validates constraints and formats response data.
     - Outgoing: Structured data for the Notification Service, and JSON responses for the API.
 """
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field
 from typing import Optional, List
 from datetime import datetime
 from uuid import UUID
 
 
-class NotificationResponse(BaseModel):
-    """
-    Schema for notification data returned to the user.
-    
-    Contains all information needed to display a notification in the UI,
-    including content, status, and related entity references.
-    """
+class NotificationItem(BaseModel):
     id: UUID
-    user_id: UUID
-    
-    # Related entities
+    type: str = Field(..., description="Presentation type such as success/info/warning")
+    category: str = Field(..., description="Domain category for the notification")
+    title: str
+    message: str
+    action_url: Optional[str] = None
     session_id: Optional[UUID] = None
     result_id: Optional[UUID] = None
-    
-    # Content
-    type: str = Field(
-        ...,
-        description="Notification type: 'test_completed', 'trade_executed', 'stop_loss_hit', 'system_alert', 'daily_summary'"
-    )
-    title: str = Field(
-        ...,
-        description="Notification title"
-    )
-    message: str = Field(
-        ...,
-        description="Notification message body"
-    )
-    
-    # Status
-    is_read: bool = Field(
-        ...,
-        description="Whether notification has been read"
-    )
-    read_at: Optional[datetime] = Field(
-        default=None,
-        description="Timestamp when notification was marked as read"
-    )
-    
-    # Timestamps
+    is_read: bool
     created_at: datetime
-    
-    model_config = ConfigDict(from_attributes=True)
 
 
 class NotificationListResponse(BaseModel):
-    """
-    Schema for paginated list of notifications.
-    
-    Used by the list notifications endpoint to return a paginated
-    collection of notifications with total count for UI pagination.
-    """
-    notifications: List[NotificationResponse] = Field(
-        ...,
-        description="List of notifications for the current page"
-    )
-    total: int = Field(
-        ...,
-        description="Total number of notifications matching the query"
-    )
-    unread_count: int = Field(
-        ...,
-        description="Total number of unread notifications"
-    )
+    notifications: List[NotificationItem]
+    total: int
+    unread_count: int
 
 
 class UnreadCountResponse(BaseModel):
-    """
-    Schema for unread notification count.
-    
-    Used by the unread count endpoint to return just the count
-    of unread notifications for badge display in the UI.
-    """
-    unread_count: int = Field(
-        ...,
-        description="Number of unread notifications"
-    )
+    count: int = Field(..., description="Number of unread notifications")

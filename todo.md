@@ -84,7 +84,7 @@
 3. **ws-auth-controls** – ✅ Harden WebSocket auth, implement client command handling, and expose configurable WS origins.
 4. **data-catalog-sync** – ✅ Serve structured assets/timeframes/indicator catalogs from the backend and refactor frontend config forms to consume them.
 5. **certs-exports-storage** – ✅ Wire Supabase storage uploads, add env docs, and expose certificate/export download endpoints with generated assets.
-6. **dashboard-notifications** – Connect dashboard + notification UIs to their services, ensuring pagination, unread counts, and activity feeds derive from real tables.
+6. **dashboard-notifications** – ✅ Wire dashboard stats/activity + notifications to live data with pagination, unread counts, and action URLs.
 7. **frontend-api-migration** – Replace `lib/dummy-data` usage across dashboard/agents/arena/results/settings with API + websocket data, using typed hooks and Zustand only for transient UI state.
 8. **docs-env-refresh** – Update `.env.example`, README, and setup docs to capture new env vars, storage steps, and integration flows so teams can reproduce the end-to-end system.
 
