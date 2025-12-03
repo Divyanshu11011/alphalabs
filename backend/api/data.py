@@ -5,8 +5,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
 from schemas.data_schemas import (
-    AssetResponse, TimeframeResponse, CandleResponse, 
-    IndicatorRequest, IndicatorResponse, CandleSchema
+    AssetResponse, TimeframeResponse, CandleResponse,
+    IndicatorRequest, IndicatorResponse, CandleSchema,
+    PresetResponse, IndicatorCatalogResponse
 )
 from services.market_data_service import MarketDataService
 from services.trading.indicator_calculator import IndicatorCalculator
@@ -19,14 +20,51 @@ async def get_assets(
     current_user: dict = Depends(get_current_user)
 ):
     """Get list of available assets."""
-    return {"assets": list(MarketDataService.ASSET_TICKER_MAP.keys())}
+    assets = [
+        {
+            "id": asset_id,
+            "name": meta["name"],
+            "icon": meta.get("icon"),
+            "available": meta.get("available", True),
+            "min_lookback_days": meta.get("min_lookback_days"),
+            "max_lookback_days": meta.get("max_lookback_days"),
+        }
+        for asset_id, meta in MarketDataService.ASSET_CATALOG.items()
+    ]
+    return {"assets": assets}
 
 @router.get("/timeframes", response_model=TimeframeResponse)
 async def get_timeframes(
     current_user: dict = Depends(get_current_user)
 ):
     """Get list of available timeframes."""
-    return {"timeframes": list(MarketDataService.TIMEFRAME_INTERVAL_MAP.keys())}
+    timeframes = [
+        {
+            "id": timeframe_id,
+            "name": meta["name"],
+            "minutes": meta["minutes"],
+            "interval": meta["interval"],
+        }
+        for timeframe_id, meta in MarketDataService.TIMEFRAME_CATALOG.items()
+    ]
+    return {"timeframes": timeframes}
+
+@router.get("/presets", response_model=PresetResponse)
+async def get_presets(
+    current_user: dict = Depends(get_current_user)
+):
+    """Get date presets and playback speeds for arena config."""
+    return {
+        "date_presets": MarketDataService.DATE_PRESETS,
+        "playback_speeds": MarketDataService.PLAYBACK_SPEEDS,
+    }
+
+@router.get("/indicators/catalog", response_model=IndicatorCatalogResponse)
+async def get_indicator_catalog(
+    current_user: dict = Depends(get_current_user)
+):
+    """Get indicator categories and definitions."""
+    return {"categories": MarketDataService.INDICATOR_CATEGORIES}
 
 @router.get("/candles", response_model=CandleResponse)
 async def get_candles(

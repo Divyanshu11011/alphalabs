@@ -26,7 +26,7 @@ Usage:
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 import hashlib
 import logging
 from functools import lru_cache
@@ -83,19 +83,107 @@ class MarketDataService:
     """
     
     # Supported assets and their yfinance ticker mappings
-    ASSET_TICKER_MAP = {
-        'BTC/USDT': 'BTC-USD',
-        'ETH/USDT': 'ETH-USD',
-        'SOL/USDT': 'SOL-USD',
+    ASSET_CATALOG: Dict[str, Dict[str, Any]] = {
+        'BTC/USDT': {
+            'ticker': 'BTC-USD',
+            'name': 'Bitcoin',
+            'icon': '₿',
+            'available': True,
+            'min_lookback_days': 7,
+            'max_lookback_days': 720,
+        },
+        'ETH/USDT': {
+            'ticker': 'ETH-USD',
+            'name': 'Ethereum',
+            'icon': 'Ξ',
+            'available': True,
+            'min_lookback_days': 7,
+            'max_lookback_days': 720,
+        },
+        'SOL/USDT': {
+            'ticker': 'SOL-USD',
+            'name': 'Solana',
+            'icon': '◎',
+            'available': True,
+            'min_lookback_days': 7,
+            'max_lookback_days': 365,
+        },
+        'BNB/USDT': {
+            'ticker': 'BNB-USD',
+            'name': 'Binance Coin',
+            'icon': 'Ɓ',
+            'available': False,
+            'min_lookback_days': 7,
+            'max_lookback_days': 365,
+        },
     }
+    ASSET_TICKER_MAP = {k: v['ticker'] for k, v in ASSET_CATALOG.items()}
     
-    # Supported timeframes and their yfinance interval mappings
-    TIMEFRAME_INTERVAL_MAP = {
-        '15m': '15m',
-        '1h': '1h',
-        '4h': '4h',
-        '1d': '1d',
+    TIMEFRAME_CATALOG: Dict[str, Dict[str, Any]] = {
+        '15m': {'interval': '15m', 'name': '15 Minutes', 'minutes': 15},
+        '1h': {'interval': '1h', 'name': '1 Hour', 'minutes': 60},
+        '4h': {'interval': '4h', 'name': '4 Hours', 'minutes': 240},
+        '1d': {'interval': '1d', 'name': '1 Day', 'minutes': 1440},
     }
+    TIMEFRAME_INTERVAL_MAP = {k: v['interval'] for k, v in TIMEFRAME_CATALOG.items()}
+    
+    DATE_PRESETS: List[Dict[str, Any]] = [
+        {"id": "7d", "name": "Last 7 days", "description": "Most recent week", "days": 7},
+        {"id": "30d", "name": "Last 30 days", "description": "Most recent month", "days": 30},
+        {"id": "90d", "name": "Last 90 days", "description": "Most recent quarter", "days": 90},
+        {"id": "bull", "name": "Bull Run", "description": "Oct 2023 - Mar 2024", "start_date": "2023-10-01", "end_date": "2024-03-31"},
+        {"id": "crash", "name": "Crash Recovery", "description": "Nov 2022 - Jan 2023", "start_date": "2022-11-01", "end_date": "2023-01-31"},
+    ]
+    
+    PLAYBACK_SPEEDS: List[Dict[str, Any]] = [
+        {"id": "slow", "name": "Slow (1s/candle)", "ms": 1000},
+        {"id": "normal", "name": "Normal (500ms/candle)", "ms": 500},
+        {"id": "fast", "name": "Fast (200ms/candle)", "ms": 200},
+        {"id": "instant", "name": "Instant", "ms": 0},
+    ]
+    
+    INDICATOR_CATEGORIES: List[Dict[str, Any]] = [
+        {
+            "id": "momentum",
+            "name": "Momentum",
+            "indicators": [
+                {"id": "rsi", "name": "RSI (Relative Strength Index)", "description": "Measures overbought/oversold conditions"},
+                {"id": "stoch", "name": "Stochastic Oscillator", "description": "Compares close to price range"},
+                {"id": "cci", "name": "CCI (Commodity Channel Index)", "description": "Identifies cyclical trends"},
+                {"id": "mom", "name": "Momentum", "description": "Rate of price change"},
+                {"id": "ao", "name": "AO (Awesome Oscillator)", "description": "Market momentum measurement"},
+            ],
+        },
+        {
+            "id": "trend",
+            "name": "Trend",
+            "indicators": [
+                {"id": "macd", "name": "MACD", "description": "Trend-following momentum indicator"},
+                {"id": "ema", "name": "EMA (Exponential Moving Average)", "description": "Smoothed average weighting recent prices"},
+                {"id": "sma", "name": "SMA (Simple Moving Average)", "description": "Average price over period"},
+                {"id": "adx", "name": "ADX (Average Directional Index)", "description": "Measures trend strength"},
+                {"id": "psar", "name": "Parabolic SAR", "description": "Highlights potential reversals"},
+            ],
+        },
+        {
+            "id": "volatility",
+            "name": "Volatility",
+            "indicators": [
+                {"id": "atr", "name": "ATR (Average True Range)", "description": "Measures market volatility"},
+                {"id": "bb", "name": "Bollinger Bands", "description": "Volatility-based envelopes"},
+                {"id": "kc", "name": "Keltner Channels", "description": "Volatility-based channels"},
+            ],
+        },
+        {
+            "id": "volume",
+            "name": "Volume",
+            "indicators": [
+                {"id": "volume", "name": "Volume", "description": "Total traded amount"},
+                {"id": "obv", "name": "OBV (On-Balance Volume)", "description": "Tracks buying/selling pressure"},
+                {"id": "vwap", "name": "VWAP", "description": "Volume weighted average price"},
+            ],
+        },
+    ]
     
     def __init__(self, db: AsyncSession):
         """
