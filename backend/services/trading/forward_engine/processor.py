@@ -317,3 +317,4 @@ class CandleProcessor:
         if not session_state.started_at:
             return 0
         return int((datetime.utcnow() - session_state.started_at).total_seconds())
+-

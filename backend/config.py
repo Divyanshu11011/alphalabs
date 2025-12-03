@@ -85,6 +85,9 @@ class Settings(BaseSettings):
     # Encryption
     ENCRYPTION_KEY: Optional[str] = None
     
+    # WebSocket configuration
+    WEBSOCKET_BASE_URL: str = "ws://localhost:8000"
+    
     model_config = ConfigDict(
         env_file=".env",
         case_sensitive=True

@@ -214,6 +214,7 @@ from models.result import TestResult
 from services.trading.backtest_engine import BacktestEngine
 from services.trading.forward_engine import ForwardEngine
 from websocket.manager import websocket_manager
+from config import settings
 from api.users import get_current_user
 
 router = APIRouter(prefix="/api/arena", tags=["arena"])
@@ -279,6 +280,11 @@ def _format_duration(seconds: int) -> str:
 
 
 async def _get_trade_stats(db: AsyncSession, session_ids: List[UUID]) -> Dict[UUID, Tuple[int, float]]:
+def _build_ws_url(path: str) -> str:
+    base = settings.WEBSOCKET_BASE_URL.rstrip("/")
+    if not path.startswith("/"):
+        path = "/" + path
+    return f"{base}{path}"
     if not session_ids:
         return {}
     result = await db.execute(
@@ -404,7 +410,7 @@ async def start_backtest(
             "asset": request.asset,
             "timeframe": request.timeframe,
             "total_candles": 0, # Will be updated by engine
-            "websocket_url": f"wss://api.alphalab.io/ws/backtest/{session_id}"
+            "websocket_url": _build_ws_url(f"/ws/backtest/{session_id}")
         },
         "message": "Backtest session created"
     }
@@ -635,7 +641,7 @@ async def start_forward_test(
             agent_name=agent.name,
             asset=request.asset,
             timeframe=request.timeframe,
-            websocket_url=f"wss://api.alphalab.io/ws/forward/{session_id}"
+            websocket_url=_build_ws_url(f"/ws/forward/{session_id}")
         ),
         "message": "Forward test started"
     }
