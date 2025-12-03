@@ -152,21 +152,21 @@ async def test_calculate_next_candle_close_time(db_session, websocket_manager):
     
     # Test 1h timeframe
     current_time = datetime(2024, 1, 1, 10, 23, 45)
-    next_close = engine._calculate_next_candle_close_time(current_time, "1h")
+    next_close = engine.timing_manager.calculate_next_candle_close_time(current_time, "1h")
     
     # Should round to next hour
     assert next_close == datetime(2024, 1, 1, 11, 0, 0)
     
     # Test 15m timeframe
     current_time = datetime(2024, 1, 1, 10, 23, 45)
-    next_close = engine._calculate_next_candle_close_time(current_time, "15m")
+    next_close = engine.timing_manager.calculate_next_candle_close_time(current_time, "15m")
     
     # Should round to next 15-minute boundary
     assert next_close == datetime(2024, 1, 1, 10, 30, 0)
     
     # Test 4h timeframe
     current_time = datetime(2024, 1, 1, 10, 23, 45)
-    next_close = engine._calculate_next_candle_close_time(current_time, "4h")
+    next_close = engine.timing_manager.calculate_next_candle_close_time(current_time, "4h")
     
     # Should round to next 4-hour boundary (12:00)
     assert next_close == datetime(2024, 1, 1, 12, 0, 0)
@@ -233,15 +233,15 @@ async def test_wait_for_candle_close(db_session, websocket_manager, mock_agent, 
     market_data_service = Mock()
     market_data_service.get_latest_candle = AsyncMock(return_value=mock_candle)
     
-    # Mock broadcast method
-    with patch.object(engine, '_broadcast_countdown_update', new=AsyncMock()):
+    # Mock broadcast method on timing_manager
+    with patch.object(engine.timing_manager, '_broadcast_countdown_update', new=AsyncMock()):
         # Mock asyncio.sleep to avoid actual waiting
         with patch('asyncio.sleep', new=AsyncMock()):
             # Set next candle time to past to trigger immediate return
             session_state.next_candle_time = datetime.utcnow() - timedelta(seconds=10)
             
             # Wait for candle
-            candle = await engine._wait_for_candle_close(
+            candle = await engine.timing_manager.wait_for_candle_close(
                 "session-123",
                 session_state,
                 market_data_service
