@@ -27,12 +27,13 @@ from datetime import datetime, timedelta
 import json
 import zipfile
 import io
-import os
 
 from models import (
     User, UserSettings, Agent, TestResult, TestSession, 
     Trade, Certificate, Notification, ActivityLog, ApiKey
 )
+from utils.storage import StorageClient
+from config import settings
 
 
 # In-memory export tracking (replace with database model in production)
@@ -50,6 +51,7 @@ class ExportService:
             db: Async database session
         """
         self.db = db
+        self.storage = StorageClient()
     
     async def create_export(
         self,
@@ -205,26 +207,29 @@ class ExportService:
             # Update progress: Package created
             export_job['progress_pct'] = 80.0
             
-            # In production, upload to storage (Supabase Storage)
-            # For now, we'll simulate with a placeholder URL
-            # storage_client = StorageClient()
-            # download_url = await storage_client.upload_file(
-            #     bucket='exports',
-            #     file_name=f'export_{export_id}.{format}',
-            #     file_data=file_data
-            # )
+            file_extension = "zip" if format == "zip" else "json"
+            file_name = f"{user_id}/{export_id}.{file_extension}"
+            content_type = "application/zip" if format == "zip" else "application/json"
             
-            # Placeholder download URL (replace with actual storage upload)
-            download_url = f"https://storage.example.com/exports/export_{export_id}.{format}"
+            await self.storage.upload_file(
+                bucket=settings.EXPORT_BUCKET,
+                file_name=file_name,
+                file_data=file_data,
+                content_type=content_type,
+                upsert=True,
+            )
             
-            # Calculate expiration (24 hours from now by default)
-            expiry_hours = int(os.getenv('EXPORT_EXPIRY_HOURS', '24'))
-            expires_at = datetime.utcnow() + timedelta(hours=expiry_hours)
+            expires_at = datetime.utcnow() + timedelta(hours=settings.EXPORT_EXPIRY_HOURS)
+            signed_url = self.storage.get_signed_url(
+                bucket=settings.EXPORT_BUCKET,
+                file_name=file_name,
+                expires_in=settings.EXPORT_EXPIRY_HOURS * 3600,
+            )
             
             # Update export job with success
             export_job['status'] = 'ready'
             export_job['progress_pct'] = 100.0
-            export_job['download_url'] = download_url
+            export_job['download_url'] = signed_url
             export_job['expires_at'] = expires_at
             export_job['size_mb'] = round(size_bytes / (1024 * 1024), 2)
             

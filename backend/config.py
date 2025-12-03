@@ -80,13 +80,18 @@ class Settings(BaseSettings):
     
     # Export Limits
     MAX_EXPORT_SIZE_MB: int = 100
-    EXPORT_URL_EXPIRY_HOURS: int = 24
+    EXPORT_EXPIRY_HOURS: int = 24
     
     # Encryption
     ENCRYPTION_KEY: Optional[str] = None
     
     # WebSocket configuration
     WEBSOCKET_BASE_URL: str = "ws://localhost:8000"
+    
+    # Storage / sharing
+    CERTIFICATE_BUCKET: str = "certificates"
+    CERTIFICATE_SHARE_BASE_URL: str = "https://alphalab.io/verify"
+    EXPORT_BUCKET: str = "exports"
     
     model_config = ConfigDict(
         env_file=".env",

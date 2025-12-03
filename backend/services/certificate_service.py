@@ -20,10 +20,17 @@ from sqlalchemy.orm import joinedload
 from uuid import UUID
 from typing import Optional, Dict, Any
 from datetime import datetime
+from io import BytesIO
 import secrets
 import string
 
+import qrcode
+
 from models import Certificate, TestResult, Agent
+from utils.storage import StorageClient
+from utils.pdf_generator import PDFGenerator
+from utils.image_generator import CertificateImageGenerator
+from config import settings
 
 
 class CertificateService:
@@ -37,6 +44,9 @@ class CertificateService:
             db: Async database session
         """
         self.db = db
+        self.storage = StorageClient()
+        self.pdf_generator = PDFGenerator()
+        self.image_generator = CertificateImageGenerator()
     
     async def generate_certificate(
         self, 
@@ -96,8 +106,7 @@ class CertificateService:
             test_result.end_date
         )
         
-        # Create share URL (base URL should come from config)
-        share_url = f"https://alphalab.io/verify/{verification_code}"
+        share_url = self._build_share_url(verification_code)
         
         # Create certificate record with cached data
         new_certificate = Certificate(
@@ -119,6 +128,74 @@ class CertificateService:
             share_url=share_url,
             view_count=0
         )
+        
+        # Generate and upload assets
+        pdf_bytes = self._build_pdf_bytes(
+            agent_name=new_certificate.agent_name,
+            model=new_certificate.model,
+            mode=new_certificate.mode,
+            test_type=new_certificate.test_type,
+            asset=new_certificate.asset,
+            pnl_pct=new_certificate.pnl_pct,
+            win_rate=new_certificate.win_rate,
+            total_trades=new_certificate.total_trades,
+            max_drawdown_pct=new_certificate.max_drawdown_pct,
+            sharpe_ratio=new_certificate.sharpe_ratio,
+            duration_display=new_certificate.duration_display,
+            test_period=new_certificate.test_period,
+            verification_code=new_certificate.verification_code,
+            share_url=new_certificate.share_url,
+            issued_at=datetime.utcnow(),
+        )
+        image_bytes = self.image_generator.generate_certificate_image(
+            agent_name=new_certificate.agent_name,
+            model=new_certificate.model,
+            mode=new_certificate.mode,
+            test_type=new_certificate.test_type,
+            asset=new_certificate.asset,
+            pnl_pct=new_certificate.pnl_pct,
+            win_rate=new_certificate.win_rate,
+            total_trades=new_certificate.total_trades,
+            max_drawdown_pct=new_certificate.max_drawdown_pct,
+            sharpe_ratio=new_certificate.sharpe_ratio,
+            duration_display=new_certificate.duration_display,
+            test_period=new_certificate.test_period,
+            verification_code=new_certificate.verification_code,
+            share_url=new_certificate.share_url,
+            issued_at=datetime.utcnow(),
+        )
+        qr_bytes = self._generate_qr_code(new_certificate.share_url)
+
+        asset_prefix = f"{new_certificate.user_id}/{new_certificate.id}"
+        pdf_path = f"{asset_prefix}/certificate.pdf"
+        image_path = f"{asset_prefix}/certificate.png"
+        qr_path = f"{asset_prefix}/qr.png"
+
+        pdf_url = await self.storage.upload_file(
+            bucket=settings.CERTIFICATE_BUCKET,
+            file_name=pdf_path,
+            file_data=pdf_bytes,
+            content_type="application/pdf",
+            upsert=True,
+        )
+        image_url = await self.storage.upload_file(
+            bucket=settings.CERTIFICATE_BUCKET,
+            file_name=image_path,
+            file_data=image_bytes,
+            content_type="image/png",
+            upsert=True,
+        )
+        qr_url = await self.storage.upload_file(
+            bucket=settings.CERTIFICATE_BUCKET,
+            file_name=qr_path,
+            file_data=qr_bytes,
+            content_type="image/png",
+            upsert=True,
+        )
+
+        new_certificate.pdf_url = pdf_url
+        new_certificate.image_url = image_url
+        new_certificate.qr_code_url = qr_url
         
         self.db.add(new_certificate)
         await self.db.commit()
@@ -209,6 +286,46 @@ class CertificateService:
             "qr_code_url": certificate.qr_code_url
         }
     
+    def build_pdf_for_certificate(self, certificate: Certificate) -> bytes:
+        """Regenerate the certificate PDF for download endpoints."""
+        return self.pdf_generator.generate_certificate(
+            agent_name=certificate.agent_name,
+            model=certificate.model,
+            mode=certificate.mode,
+            test_type=certificate.test_type,
+            asset=certificate.asset,
+            pnl_pct=certificate.pnl_pct,
+            win_rate=certificate.win_rate,
+            total_trades=certificate.total_trades,
+            max_drawdown_pct=certificate.max_drawdown_pct,
+            sharpe_ratio=certificate.sharpe_ratio,
+            duration_display=certificate.duration_display,
+            test_period=certificate.test_period,
+            verification_code=certificate.verification_code,
+            share_url=certificate.share_url,
+            issued_at=certificate.issued_at,
+        )
+    
+    def build_image_for_certificate(self, certificate: Certificate) -> bytes:
+        """Regenerate the certificate PNG for download endpoints."""
+        return self.image_generator.generate_certificate_image(
+            agent_name=certificate.agent_name,
+            model=certificate.model,
+            mode=certificate.mode,
+            test_type=certificate.test_type,
+            asset=certificate.asset,
+            pnl_pct=certificate.pnl_pct,
+            win_rate=certificate.win_rate,
+            total_trades=certificate.total_trades,
+            max_drawdown_pct=certificate.max_drawdown_pct,
+            sharpe_ratio=certificate.sharpe_ratio,
+            duration_display=certificate.duration_display,
+            test_period=certificate.test_period,
+            verification_code=certificate.verification_code,
+            share_url=certificate.share_url,
+            issued_at=certificate.issued_at,
+        )
+    
     async def _generate_verification_code(self) -> str:
         """
         Generate a unique verification code.
@@ -274,3 +391,59 @@ class CertificateService:
         
         # If different years, show: "Dec 15, 2024 - Jan 15, 2025"
         return f"{start_date.strftime('%b %d, %Y')} - {end_date.strftime('%b %d, %Y')}"
+    
+    def _build_share_url(self, verification_code: str) -> str:
+        base = settings.CERTIFICATE_SHARE_BASE_URL.rstrip("/")
+        return f"{base}/{verification_code}"
+    
+    def _build_pdf_bytes(
+        self,
+        *,
+        agent_name: str,
+        model: str,
+        mode: str,
+        test_type: str,
+        asset: str,
+        pnl_pct,
+        win_rate,
+        total_trades,
+        max_drawdown_pct,
+        sharpe_ratio,
+        duration_display: str,
+        test_period: str,
+        verification_code: str,
+        share_url: str,
+        issued_at: datetime,
+    ) -> bytes:
+        return self.pdf_generator.generate_certificate(
+            agent_name=agent_name,
+            model=model,
+            mode=mode,
+            test_type=test_type,
+            asset=asset,
+            pnl_pct=pnl_pct,
+            win_rate=win_rate,
+            total_trades=total_trades,
+            max_drawdown_pct=max_drawdown_pct,
+            sharpe_ratio=sharpe_ratio,
+            duration_display=duration_display,
+            test_period=test_period,
+            verification_code=verification_code,
+            share_url=share_url,
+            issued_at=issued_at,
+        )
+    
+    def _generate_qr_code(self, url: str) -> bytes:
+        qr = qrcode.QRCode(
+            version=1,
+            error_correction=qrcode.constants.ERROR_CORRECT_L,
+            box_size=10,
+            border=2,
+        )
+        qr.add_data(url)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="#00D4FF", back_color="#0A0A0F")
+        buffer = BytesIO()
+        img.save(buffer, format="PNG")
+        buffer.seek(0)
+        return buffer.getvalue()

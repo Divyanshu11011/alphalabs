@@ -26,7 +26,6 @@ from schemas.certificate_schemas import (
     CertificateResponse,
     CertificateVerifyResponse
 )
-from utils.pdf_generator import PDFGenerator
 from models import User
 
 router = APIRouter(prefix="/api/certificates", tags=["certificates"])
@@ -126,8 +125,7 @@ async def download_certificate_pdf(
     
     try:
         # Generate PDF
-        pdf_generator = PDFGenerator()
-        pdf_bytes = pdf_generator.generate_certificate(certificate)
+        pdf_bytes = certificate_service.build_pdf_for_certificate(certificate)
         
         # Return PDF as downloadable file
         filename = f"certificate_{certificate.verification_code}.pdf"
@@ -143,6 +141,44 @@ async def download_certificate_pdf(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to generate PDF: {str(e)}"
+        )
+
+
+@router.get("/{certificate_id}/image")
+async def download_certificate_image(
+    certificate_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Download a PNG preview of the certificate.
+    """
+    service = CertificateService(db)
+    certificate = await service.get_certificate(
+        certificate_id=certificate_id,
+        user_id=current_user.id
+    )
+    
+    if not certificate:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Certificate not found"
+        )
+    
+    try:
+        image_bytes = service.build_image_for_certificate(certificate)
+        filename = f"certificate_{certificate.verification_code}.png"
+        return Response(
+            content=image_bytes,
+            media_type="image/png",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"'
+            }
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate image: {str(exc)}"
         )
 
 
