@@ -3,80 +3,107 @@
  */
 
 import { create } from "zustand";
-import type { Agent, AgentListFilters, AgentMode } from "@/types";
-import { DUMMY_AGENTS } from "@/lib/dummy-data";
+import type { Agent, AgentMode } from "@/types/agent";
+
+type SortOption = "newest" | "oldest" | "performance" | "tests" | "alpha";
+
+interface AgentsFilterState {
+  search: string;
+  mode?: AgentMode;
+  model?: string;
+  modes: AgentMode[];
+  models: string[];
+  sortBy: SortOption;
+  sort?: SortOption;
+}
 
 interface AgentsState {
-  // Data
   agents: Agent[];
+  total: number;
   selectedAgentId: string | null;
-  
-  // Filters
-  filters: AgentListFilters;
+  filters: AgentsFilterState;
+  isLoading: boolean;
+  error: string | null;
+  lastQueryKey: string | null;
+  setAgents: (agents: Agent[]) => void;
+  setTotal: (total: number) => void;
+  setLoading: (flag: boolean) => void;
+  setError: (message: string | null) => void;
+  setFilters: (filters: Partial<AgentsFilterState>) => void;
   setSearchQuery: (query: string) => void;
   toggleModelFilter: (model: string) => void;
   toggleModeFilter: (mode: AgentMode) => void;
-  setSortBy: (sort: AgentListFilters["sortBy"]) => void;
+  setSortBy: (sort: SortOption) => void;
   clearFilters: () => void;
-  
-  // Selection
   selectAgent: (id: string | null) => void;
-  
-  // Computed
   filteredAgents: () => Agent[];
-  
-  // Actions (simulated)
   deleteAgent: (id: string) => void;
   duplicateAgent: (id: string) => void;
+  setLastQueryKey: (key: string) => void;
 }
 
-const defaultFilters: AgentListFilters = {
+const defaultFilters: AgentsFilterState = {
   search: "",
-  models: [],
+  mode: undefined,
+  model: undefined,
   modes: [],
+  models: [],
   sortBy: "newest",
+  sort: "newest",
 };
 
 export const useAgentsStore = create<AgentsState>((set, get) => ({
-  // Data - using dummy data
-  agents: DUMMY_AGENTS,
+  agents: [],
+  total: 0,
   selectedAgentId: null,
-
-  // Filters
   filters: defaultFilters,
+  isLoading: false,
+  error: null,
+  lastQueryKey: null,
+  setAgents: (agents) => set({ agents }),
+  setTotal: (total) => set({ total }),
+  setLoading: (flag) => set({ isLoading: flag }),
+  setError: (message) => set({ error: message }),
+  setFilters: (filters) =>
+    set((state) => ({ filters: { ...state.filters, ...filters } })),
   setSearchQuery: (query) =>
     set((state) => ({ filters: { ...state.filters, search: query } })),
   toggleModelFilter: (model) =>
-    set((state) => ({
-      filters: {
-        ...state.filters,
-        models: state.filters.models.includes(model)
-          ? state.filters.models.filter((m) => m !== model)
-          : [...state.filters.models, model],
-      },
-    })),
+    set((state) => {
+      const exists = state.filters.models.includes(model);
+      const models = exists
+        ? state.filters.models.filter((m) => m !== model)
+        : [...state.filters.models, model];
+      return {
+        filters: {
+          ...state.filters,
+          models,
+          model: models[models.length - 1],
+        },
+      };
+    }),
   toggleModeFilter: (mode) =>
-    set((state) => ({
-      filters: {
-        ...state.filters,
-        modes: state.filters.modes.includes(mode)
-          ? state.filters.modes.filter((m) => m !== mode)
-          : [...state.filters.modes, mode],
-      },
-    })),
+    set((state) => {
+      const exists = state.filters.modes.includes(mode);
+      const modes = exists
+        ? state.filters.modes.filter((m) => m !== mode)
+        : [...state.filters.modes, mode];
+      return {
+        filters: {
+          ...state.filters,
+          modes,
+          mode: modes[modes.length - 1],
+        },
+      };
+    }),
   setSortBy: (sort) =>
-    set((state) => ({ filters: { ...state.filters, sortBy: sort } })),
+    set((state) => ({ filters: { ...state.filters, sortBy: sort, sort } })),
   clearFilters: () => set({ filters: defaultFilters }),
-
-  // Selection
   selectAgent: (id) => set({ selectedAgentId: id }),
-
-  // Computed - returns filtered & sorted agents
   filteredAgents: () => {
     const { agents, filters } = get();
     let result = [...agents];
 
-    // Search filter
     if (filters.search) {
       const query = filters.search.toLowerCase();
       result = result.filter(
@@ -86,19 +113,16 @@ export const useAgentsStore = create<AgentsState>((set, get) => ({
       );
     }
 
-    // Model filter
     if (filters.models.length > 0) {
       result = result.filter((a) =>
         filters.models.some((m) => a.model.toLowerCase().includes(m.toLowerCase()))
       );
     }
 
-    // Mode filter
     if (filters.modes.length > 0) {
       result = result.filter((a) => filters.modes.includes(a.mode));
     }
 
-    // Sort
     switch (filters.sortBy) {
       case "newest":
         result.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
@@ -119,12 +143,11 @@ export const useAgentsStore = create<AgentsState>((set, get) => ({
 
     return result;
   },
-
-  // Actions
   deleteAgent: (id) =>
     set((state) => ({
       agents: state.agents.filter((a) => a.id !== id),
       selectedAgentId: state.selectedAgentId === id ? null : state.selectedAgentId,
+      total: Math.max(0, state.total - 1),
     })),
   duplicateAgent: (id) =>
     set((state) => {
@@ -139,7 +162,8 @@ export const useAgentsStore = create<AgentsState>((set, get) => ({
         createdAt: new Date(),
         updatedAt: new Date(),
       };
-      return { agents: [...state.agents, newAgent] };
+      return { agents: [...state.agents, newAgent], total: state.total + 1 };
     }),
+  setLastQueryKey: (key) => set({ lastQueryKey: key }),
 }));
 

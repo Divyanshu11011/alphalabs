@@ -1,35 +1,28 @@
 import { useCallback } from "react";
 import { API_BASE_URL, useApiClient } from "@/lib/api";
+import type {
+  ResultListItem,
+  ResultListResponse,
+  ResultStatsResponse,
+  ResultDetailResponse,
+  ResultTradesResponse,
+  ReasoningResponse,
+  ResultPagination,
+} from "@/types/result";
 
-interface Pagination {
+type ResultPaginationApi = {
   page: number;
   limit: number;
   total: number;
   total_pages: number;
-}
+};
 
-export interface ResultListItem {
-  id: string;
-  type: string;
-  agentId: string;
-  agentName: string;
-  asset: string;
-  mode: string;
-  createdAt: string;
-  durationDisplay: string;
-  totalTrades: number;
-  totalPnlPct: number;
-  winRate: number;
-  maxDrawdownPct: number;
-  sharpeRatio: number;
-  isProfitable: boolean;
-  hasCertificate: boolean;
-}
-
-export interface ResultListResponse {
-  results: ResultListItem[];
-  pagination: Pagination;
-}
+const mapPagination = (payload: ResultPaginationApi): ResultPagination => ({
+  page: payload.page,
+  limit: payload.limit,
+  total: payload.total,
+  totalPages: payload.total_pages,
+});
 
 export interface ResultListParams {
   page?: number;
@@ -42,80 +35,6 @@ export interface ResultListParams {
   search?: string;
   dateFrom?: string;
   dateTo?: string;
-}
-
-export interface ResultStatsResponse {
-  stats: {
-    total_tests: number;
-    profitable: number;
-    profitable_pct: number;
-    best_result: number;
-    worst_result: number;
-    avg_pnl: number;
-    by_type: Record<string, { count: number; profitable: number }>;
-  };
-}
-
-export interface ResultDetailResponse {
-  result: {
-    id: string;
-    session_id: string;
-    type: string;
-    agent_id: string;
-    agent_name: string;
-    model: string;
-    asset: string;
-    mode: string;
-    start_date: string;
-    end_date: string;
-    starting_capital: number;
-    ending_capital: number;
-    total_pnl_pct: number;
-    total_trades: number;
-    win_rate: number;
-    max_drawdown_pct: number;
-    sharpe_ratio: number;
-    profit_factor: number;
-    avg_trade_pnl?: number;
-    best_trade_pnl?: number;
-    worst_trade_pnl?: number;
-    avg_holding_time_display?: string;
-    equity_curve?: Array<Record<string, unknown>>;
-    ai_summary?: string;
-    trades: ResultTrade[];
-  };
-}
-
-export interface ResultTrade {
-  trade_number: number;
-  type: string;
-  entry_price: number;
-  exit_price?: number | null;
-  entry_time: string;
-  exit_time?: string | null;
-  pnl_amount?: number | null;
-  pnl_pct?: number | null;
-  entry_reasoning?: string | null;
-  exit_reasoning?: string | null;
-  exit_type?: string | null;
-}
-
-export interface ResultTradesResponse {
-  trades: ResultTrade[];
-  pagination: Pagination;
-}
-
-export interface ReasoningEntry {
-  candle_number: number;
-  timestamp: string;
-  decision: string;
-  reasoning: string;
-  indicator_values: Record<string, number>;
-}
-
-export interface ReasoningResponse {
-  thoughts: ReasoningEntry[];
-  pagination: Pagination;
 }
 
 export interface ResultTradesParams {
@@ -171,12 +90,12 @@ export function useResultsApi() {
       if (params.dateFrom) qs.append("date_from", params.dateFrom);
       if (params.dateTo) qs.append("date_to", params.dateTo);
       const query = qs.toString() ? `?${qs.toString()}` : "";
-      const response = await get<{ results: any[]; pagination: Pagination }>(
+      const response = await get<{ results: any[]; pagination: ResultPaginationApi }>(
         `/api/results${query}`
       );
       return {
         results: response.results.map(mapListItem),
-        pagination: response.pagination,
+        pagination: mapPagination(response.pagination),
       };
     },
     [get]
@@ -202,7 +121,13 @@ export function useResultsApi() {
       if (params.outcome) qs.append("outcome", params.outcome);
       if (params.search) qs.append("search", params.search);
       const query = qs.toString() ? `?${qs.toString()}` : "";
-      return get<ResultTradesResponse>(`/api/results/${id}/trades${query}`);
+      const response = await get<{ trades: ResultTradesResponse["trades"]; pagination: ResultPaginationApi }>(
+        `/api/results/${id}/trades${query}`
+      );
+      return {
+        ...response,
+        pagination: mapPagination(response.pagination),
+      };
     },
     [get]
   );
@@ -218,7 +143,13 @@ export function useResultsApi() {
         qs.append("candle_to", params.candleTo.toString());
       if (params.decision) qs.append("decision", params.decision);
       const query = qs.toString() ? `?${qs.toString()}` : "";
-      return get<ReasoningResponse>(`/api/results/${id}/reasoning${query}`);
+      const response = await get<{ thoughts: ReasoningResponse["thoughts"]; pagination: ResultPaginationApi }>(
+        `/api/results/${id}/reasoning${query}`
+      );
+      return {
+        ...response,
+        pagination: mapPagination(response.pagination),
+      };
     },
     [get]
   );

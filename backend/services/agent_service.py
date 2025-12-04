@@ -14,7 +14,7 @@ Data Flow:
     - Outgoing: SQLAlchemy model instances (Agent) returned to the API layer.
 """
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update, delete, func, desc
+from sqlalchemy import select, update, delete, func, desc, nullslast
 from sqlalchemy.orm import joinedload
 from uuid import UUID
 from typing import List, Optional, Dict, Any
@@ -69,15 +69,32 @@ class AgentService:
         user_id: UUID, 
         skip: int = 0, 
         limit: int = 100,
-        include_archived: bool = False
+        include_archived: bool = False,
+        sort: str = "newest"
     ) -> List[Agent]:
         """List agents for a user."""
         query = select(Agent).options(joinedload(Agent.api_key)).where(Agent.user_id == user_id)
         
         if not include_archived:
             query = query.where(Agent.is_archived == False)
+        
+        # Apply sorting based on sort parameter
+        if sort == "newest":
+            query = query.order_by(Agent.created_at.desc())
+        elif sort == "oldest":
+            query = query.order_by(Agent.created_at.asc())
+        elif sort == "performance":
+            # Sort by best_pnl descending (nulls last)
+            query = query.order_by(nullslast(desc(Agent.best_pnl)))
+        elif sort == "tests":
+            query = query.order_by(Agent.tests_run.desc())
+        elif sort == "alpha":
+            query = query.order_by(Agent.name.asc())
+        else:
+            # Default to newest
+            query = query.order_by(Agent.created_at.desc())
             
-        query = query.order_by(Agent.created_at.desc()).offset(skip).limit(limit)
+        query = query.offset(skip).limit(limit)
         
         result = await self.db.execute(query)
         return result.scalars().all()

@@ -25,11 +25,12 @@ from schemas.agent_schemas import AgentCreate, AgentUpdate, AgentResponse, Agent
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
 
-@router.get("/", response_model=AgentListResponse)
+@router.get("", response_model=AgentListResponse)
 async def list_agents(
     skip: int = 0,
     limit: int = 100,
     include_archived: bool = False,
+    sort: Optional[str] = Query("newest", regex="^(newest|oldest|performance|tests|alpha)$"),
     current_user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -39,11 +40,12 @@ async def list_agents(
         user_id=current_user.id,
         skip=skip,
         limit=limit,
-        include_archived=include_archived
+        include_archived=include_archived,
+        sort=sort
     )
     return {"agents": agents, "total": len(agents)}
 
-@router.post("/", response_model=dict)
+@router.post("", response_model=dict)
 async def create_agent(
     agent_data: AgentCreate,
     current_user: dict = Depends(get_current_user),

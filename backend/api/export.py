@@ -29,7 +29,7 @@ from models import User
 router = APIRouter(prefix="/api/export", tags=["export"])
 
 
-@router.post("/", response_model=ExportResponse, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=ExportResponse, status_code=status.HTTP_201_CREATED)
 async def create_export(
     export_data: ExportCreate,
     background_tasks: BackgroundTasks,

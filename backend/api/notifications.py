@@ -30,7 +30,7 @@ from models import User
 router = APIRouter(prefix="/api/notifications", tags=["notifications"])
 
 
-@router.get("/", response_model=NotificationListResponse)
+@router.get("", response_model=NotificationListResponse)
 async def list_notifications(
     unread_only: bool = Query(False, description="Filter to show only unread notifications"),
     limit: int = Query(20, ge=1, le=100, description="Maximum number of notifications to return"),

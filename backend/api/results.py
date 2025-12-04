@@ -23,7 +23,7 @@ from api.users import get_current_user
 
 router = APIRouter(prefix="/api/results", tags=["results"])
 
-@router.get("/", response_model=ResultListResponse)
+@router.get("", response_model=ResultListResponse)
 async def list_results(
     page: int = Query(1, ge=1),
     limit: int = Query(10, ge=1, le=100),

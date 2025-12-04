@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Eye, EyeOff, ExternalLink, Check, X, Loader2 } from "lucide-react";
 import { Atom, Lightning, Cube } from "@phosphor-icons/react";
 import { Input } from "@/components/ui/input";
@@ -17,36 +17,31 @@ import {
 import { cn } from "@/lib/utils";
 import type { AgentFormData, StepModelApiProps } from "@/types/agent";
 import { useApiKeys } from "@/hooks/use-api-keys";
+import { useModels } from "@/hooks/use-models";
 
-const models = [
-  {
-    id: "deepseek-r1",
-    name: "DeepSeek-R1",
-    icon: Atom,
-    bestFor: "Logical reasoning, math-heavy strategies",
-    meta: "Speed: Fast • Context: 64K tokens",
-  },
-  {
-    id: "claude-3.5",
-    name: "Claude 3.5 Sonnet",
-    icon: Lightning,
-    bestFor: "Nuanced analysis, complex reasoning",
-    meta: "Speed: Medium • Context: 200K tokens",
-  },
-  {
-    id: "gemini-1.5-pro",
-    name: "Gemini 1.5 Pro",
-    icon: Cube,
-    bestFor: "Large context, multi-modal analysis",
-    meta: "Speed: Fast • Context: 1M tokens",
-  },
-];
+const providerIconMap: Record<string, React.ComponentType<{ size?: number; weight?: "duotone" | "regular" }>> = {
+  qwen: Atom,
+  amazon: Lightning,
+  nous: Cube,
+  nvidia: Atom,
+  moonshot: Lightning,
+  google: Cube,
+};
+
+const providerMetaLabel = (modelProvider: string, speed: string, context: string) =>
+  `Provider: ${modelProvider.toUpperCase()} • Speed: ${speed} • Context: ${context}`;
 
 type ValidationStatus = "idle" | "validating" | "valid" | "invalid";
 
 export function StepModelApi({ formData, updateFormData }: StepModelApiProps) {
   const { apiKeys, isLoading: isLoadingKeys } = useApiKeys();
   const { validateApiKey: validateKeyApi } = useApiKeys();
+  const {
+    models,
+    isLoading: modelsLoading,
+    error: modelsError,
+    refetch: refetchModels,
+  } = useModels();
   const [showApiKey, setShowApiKey] = useState(false);
   const [validationStatus, setValidationStatus] = useState<ValidationStatus>("idle");
   const [isNewKey, setIsNewKey] = useState(false);
@@ -71,7 +66,23 @@ export function StepModelApi({ formData, updateFormData }: StepModelApiProps) {
     }
   };
 
-  const selectedModel = models.find((m) => m.id === formData.model);
+  const selectedModel = useMemo(
+    () => models.find((m) => m.id === formData.model),
+    [models, formData.model]
+  );
+
+  const renderModelOption = (modelId: string) => {
+    const model = models.find((m) => m.id === modelId);
+    if (!model) return null;
+    const IconComponent =
+      providerIconMap[model.provider?.toLowerCase()] || Atom;
+    return (
+      <span className="flex items-center gap-2">
+        <IconComponent size={18} weight="duotone" className="text-primary" />
+        <span>{model.name}</span>
+      </span>
+    );
+  };
 
   // Filter keys for OpenRouter (since that's what we support for now)
   const openRouterKeys = apiKeys.filter(k => k.provider === "openrouter");
@@ -86,26 +97,47 @@ export function StepModelApi({ formData, updateFormData }: StepModelApiProps) {
         <AnimatedSelect
           value={formData.model}
           onValueChange={(value) => updateFormData({ model: value })}
+          disabled={modelsLoading && models.length === 0}
         >
           <AnimatedSelectTrigger className="w-full h-10">
-            {selectedModel ? (
-              <span className="flex items-center gap-2">
-                <selectedModel.icon size={18} weight="duotone" className="text-primary" />
-                <span>{selectedModel.name}</span>
-              </span>
-            ) : (
-              <AnimatedSelectValue placeholder="Select a model..." />
-            )}
+            {selectedModel
+              ? renderModelOption(selectedModel.id)
+              : modelsLoading
+              ? "Loading models..."
+              : modelsError
+              ? "Failed to load models"
+              : <AnimatedSelectValue placeholder="Select a model..." />}
           </AnimatedSelectTrigger>
           <AnimatedSelectContent>
-            {models.map((model) => (
-              <AnimatedSelectItem key={model.id} value={model.id} className="py-3">
-                <div className="flex items-center gap-2">
-                  <model.icon size={18} weight="duotone" className="text-primary" />
-                  <span className="font-medium">{model.name}</span>
-                </div>
-              </AnimatedSelectItem>
-            ))}
+            {modelsLoading && models.length === 0 ? (
+              <div className="p-4 text-center text-sm text-muted-foreground">
+                Loading models...
+              </div>
+            ) : modelsError && models.length === 0 ? (
+              <div className="p-4 text-center text-sm text-destructive">
+                Failed to load models.
+                <Button
+                  variant="link"
+                  className="mt-2 text-xs"
+                  onClick={() => void refetchModels()}
+                >
+                  Retry
+                </Button>
+              </div>
+            ) : (
+              models.map((model) => {
+                const IconComponent =
+                  providerIconMap[model.provider?.toLowerCase()] || Atom;
+                return (
+                  <AnimatedSelectItem key={model.id} value={model.id} className="py-3">
+                    <div className="flex items-center gap-2">
+                      <IconComponent size={18} weight="duotone" className="text-primary" />
+                      <span className="font-medium">{model.name}</span>
+                    </div>
+                  </AnimatedSelectItem>
+                );
+              })
+            )}
           </AnimatedSelectContent>
         </AnimatedSelect>
       </div>
@@ -115,14 +147,20 @@ export function StepModelApi({ formData, updateFormData }: StepModelApiProps) {
         <div className="rounded-lg border border-border/50 bg-muted/20 p-4">
           <div className="flex items-center gap-3">
             <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-primary/10 text-primary">
-              <selectedModel.icon size={28} weight="duotone" />
+              {(() => {
+                const IconComponent =
+                  providerIconMap[selectedModel.provider?.toLowerCase()] || Atom;
+                return <IconComponent size={28} weight="duotone" />;
+              })()}
             </div>
             <div>
               <p className="font-mono text-sm font-medium">{selectedModel.name}</p>
               <p className="text-xs text-muted-foreground">
-                {selectedModel.bestFor}
+                {selectedModel.best_for}
               </p>
-              <p className="text-xs text-muted-foreground/60">{selectedModel.meta}</p>
+              <p className="text-xs text-muted-foreground/60">
+                {providerMetaLabel(selectedModel.provider, selectedModel.speed, selectedModel.contextWindow)}
+              </p>
             </div>
           </div>
         </div>

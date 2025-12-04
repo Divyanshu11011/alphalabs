@@ -122,10 +122,14 @@ class BacktestEngine:
             ValidationError: If parameters are invalid
             Exception: If data loading or initialization fails
         """
+        # Handle both date and datetime objects
+        start_date_str = start_date.date() if hasattr(start_date, 'date') else str(start_date)
+        end_date_str = end_date.date() if hasattr(end_date, 'date') else str(end_date)
+        
         logger.info(
             f"Starting backtest: session_id={session_id}, "
             f"agent={agent.name}, asset={asset}, timeframe={timeframe}, "
-            f"start={start_date.date()}, end={end_date.date()}"
+            f"start={start_date_str}, end={end_date_str}"
         )
         
         try:
@@ -148,9 +152,11 @@ class BacktestEngine:
                 )
             
             if not candles:
+                start_date_str = start_date.date() if hasattr(start_date, 'date') else str(start_date)
+                end_date_str = end_date.date() if hasattr(end_date, 'date') else str(end_date)
                 raise ValidationError(
                     f"No historical data available for {asset} {timeframe} "
-                    f"from {start_date.date()} to {end_date.date()}"
+                    f"from {start_date_str} to {end_date_str}"
                 )
             
             logger.info(f"Loaded {len(candles)} candles for backtest")

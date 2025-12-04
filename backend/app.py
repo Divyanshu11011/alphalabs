@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from database import get_supabase_client, get_db, validate_database_connection, validate_database_schema
-from api import users, api_keys, agents, arena, data, results, certificates, notifications, dashboard, export
+from api import users, api_keys, agents, arena, data, results, certificates, notifications, dashboard, export, models
 from auth import verify_clerk_token, get_user_id_from_token
 from webhooks import verify_webhook_signature, handle_user_created, handle_user_updated, handle_user_deleted
 from websocket.handlers import handle_backtest_websocket, handle_forward_websocket
@@ -138,6 +138,7 @@ app.include_router(certificates.router)
 app.include_router(notifications.router)
 app.include_router(dashboard.router)
 app.include_router(export.router)
+app.include_router(models.router)
 
 # WebSocket Routes
 @app.websocket("/ws/backtest/{session_id}")
@@ -243,6 +244,34 @@ async def clerk_webhook(request: Request, svix_id: Optional[str] = Header(None),
 
 if __name__ == '__main__':
     import uvicorn
+    import sys
     port = int(os.getenv('PORT', 5000))
-    uvicorn.run("app:app", host='0.0.0.0', port=port, reload=True)
+    
+    # On Windows, uvicorn reload can be problematic
+    # Use explicit reload configuration to prevent crashes
+    reload_enabled = os.getenv('RELOAD', 'true').lower() == 'true'
+    
+    if reload_enabled:
+        # Get the backend directory path
+        backend_dir = os.path.dirname(os.path.abspath(__file__))
+        uvicorn.run(
+            "app:app",
+            host='0.0.0.0',
+            port=port,
+            reload=True,
+            reload_dirs=[backend_dir],
+            reload_includes=['*.py'],
+            reload_excludes=['*.pyc', '__pycache__', '*.log', '.env', '*.py~'],
+            reload_delay=0.5,  # Small delay to allow file writes to complete
+            # Use poll-based watching on Windows (more reliable than inotify)
+            use_colors=True,
+        )
+    else:
+        # Run without reload for production-like behavior
+        uvicorn.run(
+            "app:app",
+            host='0.0.0.0',
+            port=port,
+            reload=False
+        )
 

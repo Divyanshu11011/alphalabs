@@ -31,7 +31,7 @@ from models import User
 router = APIRouter(prefix="/api/certificates", tags=["certificates"])
 
 
-@router.post("/", response_model=CertificateResponse, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=CertificateResponse, status_code=status.HTTP_201_CREATED)
 async def create_certificate(
     certificate_data: CertificateCreate,
     current_user: User = Depends(get_current_user),

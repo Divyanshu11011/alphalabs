@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronLeft, Check } from "lucide-react";
+import { ChevronLeft, Check, Loader2 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { motion } from "motion/react";
@@ -11,6 +11,9 @@ import { StepIdentity } from "./step-identity";
 import { StepModelApi } from "./step-model-api";
 import { StepDataBuffet } from "./step-data-buffet";
 import { StepStrategyPrompt } from "./step-strategy-prompt";
+import { useAgents } from "@/hooks/use-agents";
+import { useApiKeys } from "@/hooks/use-api-keys";
+import { toast } from "sonner";
 
 const steps = [
   { id: 1, name: "Identity", description: "Name & Mode" },
@@ -49,6 +52,9 @@ export function AgentCreationWizard() {
   const router = useRouter();
   const [currentStep, setCurrentStep] = useState(1);
   const [formData, setFormData] = useState<AgentFormData>(initialFormData);
+  const [isCreating, setIsCreating] = useState(false);
+  const { createAgent } = useAgents();
+  const { createApiKey } = useApiKeys();
 
   const updateFormData = (updates: Partial<AgentFormData>) => {
     setFormData((prev) => ({ ...prev, ...updates }));
@@ -84,10 +90,52 @@ export function AgentCreationWizard() {
   };
 
   const handleCreate = async () => {
-    // In real app, call API to create agent
-    console.log("Creating agent:", formData);
-    // Navigate to agents list or agent detail
-    router.push("/dashboard/agents");
+    if (isCreating) return;
+    
+    setIsCreating(true);
+    try {
+      let apiKeyId = formData.apiKey;
+
+      // If it's a new API key (starts with "sk-"), we need to save it first
+      // because the backend requires an api_key_id (UUID), not a raw key
+      if (formData.apiKey.startsWith("sk-")) {
+        try {
+          const newKey = await createApiKey({
+            provider: "openrouter",
+            api_key: formData.apiKey,
+            label: formData.saveApiKey 
+              ? `${formData.name} - OpenRouter` 
+              : `Temp - ${formData.name}`,
+            set_as_default: formData.saveApiKey,
+          });
+          apiKeyId = newKey.id;
+        } catch (error) {
+          toast.error("Failed to save API key. Please try again.");
+          setIsCreating(false);
+          return;
+        }
+      }
+
+      // Create the agent
+      const agent = await createAgent({
+        name: formData.name,
+        mode: formData.mode!,
+        model: formData.model,
+        api_key_id: apiKeyId,
+        indicators: formData.indicators,
+        custom_indicators: formData.customIndicators.length > 0 ? formData.customIndicators : undefined,
+        strategy_prompt: formData.strategyPrompt,
+      });
+
+      toast.success(`Agent "${formData.name}" created successfully!`);
+      router.push(`/dashboard/agents/${agent.id}`);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : "Failed to create agent";
+      toast.error(errorMessage);
+      console.error("Error creating agent:", error);
+    } finally {
+      setIsCreating(false);
+    }
   };
 
   return (
@@ -197,13 +245,22 @@ export function AgentCreationWizard() {
           >
             <Button
               onClick={handleNext}
-              disabled={!canProceed()}
+              disabled={!canProceed() || isCreating}
               className={cn(
                 currentStep === 4 &&
                   "bg-primary text-primary-foreground hover:bg-primary/90"
               )}
             >
-              {currentStep === 4 ? "Create Agent ->" : "Continue ->"}
+              {isCreating ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Creating...
+                </>
+              ) : currentStep === 4 ? (
+                "Create Agent ->"
+              ) : (
+                "Continue ->"
+              )}
             </Button>
           </motion.div>
         </div>

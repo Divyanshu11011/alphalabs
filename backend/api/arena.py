@@ -70,90 +70,6 @@ async def stop_forward_test(
         "final_pnl": final_pnl,
         "position_closed": position_closed
     }
-@router.get("/forward/{id}", response_model=ForwardStatusWrapper)
-async def get_forward_status(
-    id: UUID,
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
-    engine: ForwardEngine = Depends(get_forward_engine)
-):
-    """Get status for a forward session."""
-    session_state = engine.active_sessions.get(str(id))
-    now = datetime.utcnow()
-    
-    if session_state and session_state.agent.user_id == current_user.id:
-        stats = session_state.position_manager.get_stats()
-        open_pos = _serialize_open_position(session_state.position_manager.get_position())
-        elapsed_seconds = int((now - session_state.started_at).total_seconds()) if session_state.started_at else 0
-        next_eta = None
-        if session_state.next_candle_time:
-            next_eta = max(0, int((session_state.next_candle_time - now).total_seconds()))
-        return {
-            "session": {
-                "id": id,
-                "status": "running" if not session_state.is_paused else "paused",
-                "started_at": session_state.started_at,
-                "elapsed_seconds": elapsed_seconds,
-                "current_equity": stats["current_equity"],
-                "current_pnl_pct": stats["equity_change_pct"],
-                "max_drawdown_pct": session_state.max_drawdown_pct,
-                "trades_count": stats["total_trades"],
-                "win_rate": stats["win_rate"],
-                "next_candle_eta": next_eta,
-                "open_position": open_pos
-            }
-        }
-    
-    result = await db.execute(
-        select(TestSession).where(
-            TestSession.id == id,
-            TestSession.user_id == current_user.id,
-            TestSession.type == "forward"
-        )
-    )
-    session = result.scalar_one_or_none()
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-    
-    test_result_stmt = await db.execute(
-        select(TestResult).where(TestResult.session_id == session.id)
-    )
-    test_result = test_result_stmt.scalar_one_or_none()
-    
-    if test_result:
-        current_equity = float(test_result.ending_capital)
-        pnl_pct = float(test_result.total_pnl_pct)
-        trades_count = test_result.total_trades
-        win_rate = float(test_result.win_rate or 0)
-        max_drawdown = float(test_result.max_drawdown_pct or 0)
-    else:
-        current_equity = float(session.current_equity or session.starting_capital)
-        pnl_pct = float(session.current_pnl_pct or 0)
-        stats_map = await _get_trade_stats(db, [session.id])
-        trades_count, win_rate = stats_map.get(session.id, (0, 0.0))
-        max_drawdown = float(session.max_drawdown_pct or 0)
-    
-    elapsed_seconds = session.elapsed_seconds or 0
-    if not elapsed_seconds and session.started_at:
-        elapsed_seconds = int((now - session.started_at).total_seconds())
-    
-    open_position = _open_position_from_dict(session.open_position)
-    
-    return {
-        "session": {
-            "id": session.id,
-            "status": session.status,
-            "started_at": session.started_at,
-            "elapsed_seconds": elapsed_seconds,
-            "current_equity": current_equity,
-            "current_pnl_pct": pnl_pct,
-            "max_drawdown_pct": max_drawdown,
-            "trades_count": trades_count,
-            "win_rate": win_rate,
-            "next_candle_eta": None,
-            "open_position": open_position
-        }
-    }
 @router.get("/forward/active", response_model=ForwardActiveListResponse)
 async def get_forward_active_sessions(
     db: AsyncSession = Depends(get_db),
@@ -238,6 +154,93 @@ async def get_forward_active_sessions(
             )
         )
     
+    return {"sessions": sessions}
+
+
+@router.get("/forward/{id}", response_model=ForwardStatusWrapper)
+async def get_forward_status(
+    id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+    engine: ForwardEngine = Depends(get_forward_engine)
+):
+    """Get status for a forward session."""
+    session_state = engine.active_sessions.get(str(id))
+    now = datetime.utcnow()
+    
+    if session_state and session_state.agent.user_id == current_user.id:
+        stats = session_state.position_manager.get_stats()
+        open_pos = _serialize_open_position(session_state.position_manager.get_position())
+        elapsed_seconds = int((now - session_state.started_at).total_seconds()) if session_state.started_at else 0
+        next_eta = None
+        if session_state.next_candle_time:
+            next_eta = max(0, int((session_state.next_candle_time - now).total_seconds()))
+        return {
+            "session": {
+                "id": id,
+                "status": "running" if not session_state.is_paused else "paused",
+                "started_at": session_state.started_at,
+                "elapsed_seconds": elapsed_seconds,
+                "current_equity": stats["current_equity"],
+                "current_pnl_pct": stats["equity_change_pct"],
+                "max_drawdown_pct": session_state.max_drawdown_pct,
+                "trades_count": stats["total_trades"],
+                "win_rate": stats["win_rate"],
+                "next_candle_eta": next_eta,
+                "open_position": open_pos
+            }
+        }
+    
+    result = await db.execute(
+        select(TestSession).where(
+            TestSession.id == id,
+            TestSession.user_id == current_user.id,
+            TestSession.type == "forward"
+        )
+    )
+    session = result.scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    test_result_stmt = await db.execute(
+        select(TestResult).where(TestResult.session_id == session.id)
+    )
+    test_result = test_result_stmt.scalar_one_or_none()
+    
+    if test_result:
+        current_equity = float(test_result.ending_capital)
+        pnl_pct = float(test_result.total_pnl_pct)
+        trades_count = test_result.total_trades
+        win_rate = float(test_result.win_rate or 0)
+        max_drawdown = float(test_result.max_drawdown_pct or 0)
+    else:
+        current_equity = float(session.current_equity or session.starting_capital)
+        pnl_pct = float(session.current_pnl_pct or 0)
+        stats_map = await _get_trade_stats(db, [session.id])
+        trades_count, win_rate = stats_map.get(session.id, (0, 0.0))
+        max_drawdown = float(session.max_drawdown_pct or 0)
+    
+    elapsed_seconds = session.elapsed_seconds or 0
+    if not elapsed_seconds and session.started_at:
+        elapsed_seconds = int((now - session.started_at).total_seconds())
+    
+    open_position = _open_position_from_dict(session.open_position)
+    
+    return {
+        "session": {
+            "id": session.id,
+            "status": session.status,
+            "started_at": session.started_at,
+            "elapsed_seconds": elapsed_seconds,
+            "current_equity": current_equity,
+            "current_pnl_pct": pnl_pct,
+            "max_drawdown_pct": max_drawdown,
+            "trades_count": trades_count,
+            "win_rate": win_rate,
+            "next_candle_eta": None,
+            "open_position": open_position
+        }
+    }
 # Historical presets (UTC)
 _DATE_PRESET_MAP = {
     "bull": (datetime(2023, 10, 1), datetime(2024, 3, 31)),

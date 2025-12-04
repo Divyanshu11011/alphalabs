@@ -52,8 +52,29 @@ interface ForwardStartResponse {
   message: string;
 }
 
+interface BacktestStatusResponse {
+  session: {
+    id: string;
+    status: string;
+    current_candle: number;
+    total_candles: number;
+    progress_pct: number;
+    elapsed_seconds: number;
+    current_equity: number;
+    current_pnl_pct: number;
+    max_drawdown_pct: number;
+    trades_count: number;
+    win_rate: number;
+    open_position: {
+      type: "long" | "short";
+      entry_price: number;
+      unrealized_pnl: number;
+    } | null;
+  };
+}
+
 export function useArenaApi() {
-  const { post } = useApiClient();
+  const { post, get } = useApiClient();
 
   const startBacktest = useCallback(
     async (payload: BacktestStartPayload) => {
@@ -71,9 +92,18 @@ export function useArenaApi() {
     [post]
   );
 
+  const getBacktestStatus = useCallback(
+    async (sessionId: string) => {
+      const response = await get<BacktestStatusResponse>(`/api/arena/backtest/${sessionId}`);
+      return response.session;
+    },
+    [get]
+  );
+
   return {
     startBacktest,
     startForwardTest,
+    getBacktestStatus,
   };
 }
 

@@ -17,6 +17,7 @@ import {
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import { useAgents } from "@/hooks/use-agents";
 import { useAgentsStore, useDynamicIslandStore } from "@/lib/stores";
 import {
   ExpandableScreen,
@@ -39,6 +40,11 @@ export function DashboardHeader() {
   const { user } = useUser();
   const router = useRouter();
   const { agents } = useAgentsStore();
+  const {
+    isLoading: agentsLoading,
+    error: agentsError,
+    refetch: refetchAgents,
+  } = useAgents();
   
   // Dynamic Island
   const { showIdle, showLiveSession, hide } = useDynamicIslandStore();
@@ -83,6 +89,12 @@ export function DashboardHeader() {
   const [selectedAgent, setSelectedAgent] = useState<string>("");
   const [testType, setTestType] = useState<"backtest" | "forward">("backtest");
   
+  useEffect(() => {
+    if (!selectedAgent && agents.length > 0) {
+      setSelectedAgent(agents[0].id);
+    }
+  }, [agents, selectedAgent]);
+
   const agent = agents.find((a) => a.id === selectedAgent);
   const canForwardTest: boolean = !!(agent && (agent.stats.profitableTests ?? 0) > 0);
   
@@ -148,6 +160,9 @@ export function DashboardHeader() {
           >
             <QuickTestContent 
               agents={agents}
+              agentsLoading={agentsLoading}
+              agentsError={agentsError}
+              onRetryAgents={refetchAgents}
               selectedAgent={selectedAgent}
               setSelectedAgent={setSelectedAgent}
               testType={testType}
@@ -181,6 +196,9 @@ export function DashboardHeader() {
 // Quick Test Content Component
 function QuickTestContent({
   agents,
+  agentsLoading,
+  agentsError,
+  onRetryAgents,
   selectedAgent,
   setSelectedAgent,
   testType,
@@ -189,6 +207,9 @@ function QuickTestContent({
   onStartTest,
 }: {
   agents: Agent[];
+  agentsLoading: boolean;
+  agentsError: string | null;
+  onRetryAgents: () => Promise<void>;
   selectedAgent: string;
   setSelectedAgent: (id: string) => void;
   testType: "backtest" | "forward";
@@ -228,33 +249,48 @@ function QuickTestContent({
         </div>
 
         {/* Agent Selection */}
-          <div className="space-y-2">
-            <Label>Select Agent</Label>
-            <AnimatedSelect value={selectedAgent} onValueChange={setSelectedAgent}>
-              <AnimatedSelectTrigger className="h-12">
-                <AnimatedSelectValue placeholder="Choose an agent..." />
-              </AnimatedSelectTrigger>
-              <AnimatedSelectContent>
-                {agents.length === 0 ? (
-                  <div className="p-4 text-center text-sm text-muted-foreground">
-                    No agents yet. Create one first!
-                  </div>
-                ) : (
-                  agents.map((agent) => (
-                    <AnimatedSelectItem key={agent.id} value={agent.id} textValue={agent.name}>
-                      <div className="flex items-center gap-2">
-                        <Bot className="h-4 w-4" />
-                        <span className="font-mono">{agent.name}</span>
-                        <Badge variant="outline" className="text-[10px]">
-                          {agent.mode}
-                        </Badge>
-                      </div>
-                    </AnimatedSelectItem>
-                  ))
-                )}
-              </AnimatedSelectContent>
-            </AnimatedSelect>
-          </div>
+        <div className="space-y-2">
+          <Label>Select Agent</Label>
+          <AnimatedSelect value={selectedAgent} onValueChange={setSelectedAgent}>
+            <AnimatedSelectTrigger className="h-12">
+              <AnimatedSelectValue placeholder="Choose an agent..." />
+            </AnimatedSelectTrigger>
+            <AnimatedSelectContent>
+              {agentsLoading ? (
+                <div className="p-4 text-center text-sm text-muted-foreground">
+                  Loading agents...
+                </div>
+              ) : agentsError ? (
+                <div className="p-4 text-center text-sm text-destructive">
+                  Failed to load agents.
+                  <Button
+                    variant="link"
+                    className="mt-2 text-xs"
+                    onClick={() => void onRetryAgents()}
+                  >
+                    Retry
+                  </Button>
+                </div>
+              ) : agents.length === 0 ? (
+                <div className="p-4 text-center text-sm text-muted-foreground">
+                  No agents yet. Create one first!
+                </div>
+              ) : (
+                agents.map((agent) => (
+                  <AnimatedSelectItem key={agent.id} value={agent.id} textValue={agent.name}>
+                    <div className="flex items-center gap-2">
+                      <Bot className="h-4 w-4" />
+                      <span className="font-mono">{agent.name}</span>
+                      <Badge variant="outline" className="text-[10px]">
+                        {agent.mode}
+                      </Badge>
+                    </div>
+                  </AnimatedSelectItem>
+                ))
+              )}
+            </AnimatedSelectContent>
+          </AnimatedSelect>
+        </div>
 
         {/* Test Type Selection */}
         <div className="space-y-2">

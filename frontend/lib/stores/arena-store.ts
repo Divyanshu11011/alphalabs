@@ -3,16 +3,27 @@
  */
 
 import { create } from "zustand";
-import type { BattleState, LiveSession, BacktestConfig, ForwardTestConfig, PlaybackSpeed } from "@/types";
-import { DUMMY_LIVE_SESSIONS } from "@/lib/dummy-data";
+import type { BattleState, LiveSession, BacktestConfig, ForwardTestConfig, PlaybackSpeed, CandleData, AIThought, Trade } from "@/types";
 
 interface ArenaState {
   // Active sessions
   liveSessions: LiveSession[];
   
-  // Current battle (backtest)
+  // Current battle (backtest) - session-specific data
   battleState: BattleState | null;
   backtestConfig: BacktestConfig | null;
+  
+  // Session data (candles, trades, thoughts) - keyed by sessionId
+  sessionData: Record<string, {
+    candles: CandleData[];
+    trades: Trade[];
+    thoughts: AIThought[];
+    equity: number;
+    pnl: number;
+    status: string;
+    currentCandle: number;
+    totalCandles: number;
+  }>;
   
   // Forward test config
   forwardConfig: ForwardTestConfig | null;
@@ -30,6 +41,13 @@ interface ArenaState {
   stopBattle: () => void;
   setPlaybackSpeed: (speed: PlaybackSpeed) => void;
   
+  // Session data actions
+  addCandle: (sessionId: string, candle: CandleData) => void;
+  addTrade: (sessionId: string, trade: Trade) => void;
+  addThought: (sessionId: string, thought: AIThought) => void;
+  updateSessionStats: (sessionId: string, stats: { equity?: number; pnl?: number; status?: string; currentCandle?: number; totalCandles?: number }) => void;
+  clearSessionData: (sessionId: string) => void;
+  
   // Live sessions
   addLiveSession: (session: LiveSession) => void;
   removeLiveSession: (id: string) => void;
@@ -37,13 +55,16 @@ interface ArenaState {
 }
 
 export const useArenaStore = create<ArenaState>((set, get) => ({
-  // Active sessions - using dummy data
+  // Active sessions
   liveSessions: [],
   
   // Battle state
   battleState: null,
   backtestConfig: null,
   forwardConfig: null,
+  
+  // Session data - keyed by sessionId
+  sessionData: {},
   
   // Controls
   isPlaying: false,
@@ -69,6 +90,20 @@ export const useArenaStore = create<ArenaState>((set, get) => ({
         aiThoughts: [],
       },
       isPlaying: true,
+      // Initialize session data
+      sessionData: {
+        ...get().sessionData,
+        [sessionId]: {
+          candles: [],
+          trades: [],
+          thoughts: [],
+          equity: get().backtestConfig?.capital || 10000,
+          pnl: 0,
+          status: "running",
+          currentCandle: 0,
+          totalCandles: 0,
+        },
+      },
     }),
   pauseBattle: () =>
     set((state) => ({
@@ -92,6 +127,101 @@ export const useArenaStore = create<ArenaState>((set, get) => ({
         : null,
     })),
   setPlaybackSpeed: (speed) => set({ playbackSpeed: speed }),
+  
+  // Session data actions
+  addCandle: (sessionId, candle) =>
+    set((state) => {
+      const session = state.sessionData[sessionId] || {
+        candles: [],
+        trades: [],
+        thoughts: [],
+        equity: 0,
+        pnl: 0,
+        status: "running",
+        currentCandle: 0,
+        totalCandles: 0,
+      };
+      return {
+        sessionData: {
+          ...state.sessionData,
+          [sessionId]: {
+            ...session,
+            candles: [...session.candles, candle],
+          },
+        },
+      };
+    }),
+  addTrade: (sessionId, trade) =>
+    set((state) => {
+      const session = state.sessionData[sessionId] || {
+        candles: [],
+        trades: [],
+        thoughts: [],
+        equity: 0,
+        pnl: 0,
+        status: "running",
+        currentCandle: 0,
+        totalCandles: 0,
+      };
+      return {
+        sessionData: {
+          ...state.sessionData,
+          [sessionId]: {
+            ...session,
+            trades: [trade, ...session.trades].slice(0, 100), // Keep last 100 trades
+          },
+        },
+      };
+    }),
+  addThought: (sessionId, thought) =>
+    set((state) => {
+      const session = state.sessionData[sessionId] || {
+        candles: [],
+        trades: [],
+        thoughts: [],
+        equity: 0,
+        pnl: 0,
+        status: "running",
+        currentCandle: 0,
+        totalCandles: 0,
+      };
+      return {
+        sessionData: {
+          ...state.sessionData,
+          [sessionId]: {
+            ...session,
+            thoughts: [thought, ...session.thoughts].slice(0, 50), // Keep last 50 thoughts
+          },
+        },
+      };
+    }),
+  updateSessionStats: (sessionId, stats) =>
+    set((state) => {
+      const session = state.sessionData[sessionId] || {
+        candles: [],
+        trades: [],
+        thoughts: [],
+        equity: 0,
+        pnl: 0,
+        status: "running",
+        currentCandle: 0,
+        totalCandles: 0,
+      };
+      return {
+        sessionData: {
+          ...state.sessionData,
+          [sessionId]: {
+            ...session,
+            ...stats,
+          },
+        },
+      };
+    }),
+  clearSessionData: (sessionId) =>
+    set((state) => {
+      const { [sessionId]: _, ...rest } = state.sessionData;
+      return { sessionData: rest };
+    }),
   
   // Live sessions
   addLiveSession: (session) =>
