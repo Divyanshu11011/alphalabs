@@ -65,6 +65,8 @@ export function GlobalBacktestStream() {
               message: NARRATOR_MESSAGES.analyzing,
               phase: "analyzing",
               currentAsset: assetSymbol.toUpperCase().replace("-", "/"),
+              sessionId: sessionId,
+              sessionType: "backtest",
             });
           }
           break;

@@ -303,27 +303,15 @@ export function ResultDetail({ resultId }: ResultDetailProps) {
               Export
             </Button>
             {isProfitable && (
-              <>
-                <Button 
-                  variant="outline" 
-                  size="sm" 
-                  className="gap-2"
-                  onClick={handleShare}
-                  disabled={isCreatingCertificate}
-                >
-                  <Share2 className="h-4 w-4" />
-                  Share
-                </Button>
-                <Button
-                  size="sm"
-                  className="gap-2 bg-[hsl(var(--brand-flame))] text-white hover:bg-[hsl(var(--brand-flame))]/90"
-                  onClick={handleCreateCertificate}
-                  disabled={isCreatingCertificate}
-                >
-                  <Award className="h-4 w-4" />
-                  {isCreatingCertificate ? "Creating..." : "Certificate"}
-                </Button>
-              </>
+              <Button
+                size="sm"
+                className="gap-2 bg-[hsl(var(--brand-flame))] text-white hover:bg-[hsl(var(--brand-flame))]/90"
+                onClick={handleShare}
+                disabled={isCreatingCertificate}
+              >
+                <Share2 className="h-4 w-4" />
+                {isCreatingCertificate ? "Creating..." : "Share Certificate"}
+              </Button>
             )}
           </div>
         </div>

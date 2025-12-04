@@ -78,19 +78,26 @@ function DashboardLayoutInner({ children }: { children: React.ReactNode }) {
   const isDashboardRoot = pathname === "/dashboard";
   const isBacktestConfig = pathname === "/dashboard/arena/backtest";
   const isForwardConfig = pathname === "/dashboard/arena/forward";
+  const isBattlePage = pathname.startsWith("/dashboard/arena/backtest/") || pathname.startsWith("/dashboard/arena/forward/");
+  const isAgentsPage = pathname.startsWith("/dashboard/agents");
+  const isResultsPage = pathname.startsWith("/dashboard/results");
+  const isCertsPage = pathname.startsWith("/dashboard/certs");
   const { stats, averageProfit, activity } = useDashboardDataContext();
   
   // Determine rotation context and preparing message:
-  // - Dashboard root: show dashboard rotation
+  // - Dashboard root, Agents, Results, Certs: show dashboard rotation
   // - Config pages: show static preparing message
   // - Battle/Live pages: null (let battle-screen.tsx control the island)
-  const rotationContext = isDashboardRoot ? ("dashboard" as const) : null;
+  const rotationContext = (isDashboardRoot || isAgentsPage || isResultsPage || isCertsPage) 
+    ? ("dashboard" as const) 
+    : null;
   
   const preparingConfig = useMemo(() => {
-    if (isBacktestConfig) return { type: "backtest" as const };
-    if (isForwardConfig) return { type: "forward" as const };
+    // Only show preparing on config pages (not on battle/live pages)
+    if (isBacktestConfig && !isBattlePage) return { type: "backtest" as const };
+    if (isForwardConfig && !isBattlePage) return { type: "forward" as const };
     return undefined;
-  }, [isBacktestConfig, isForwardConfig]);
+  }, [isBacktestConfig, isForwardConfig, isBattlePage]);
   
   const rotationData = useMemo(() => {
     if (!stats) return undefined;

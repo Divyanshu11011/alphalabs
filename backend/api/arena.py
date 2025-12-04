@@ -8,7 +8,7 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, case
+from sqlalchemy import select, func, case, delete
 from sqlalchemy.orm import selectinload
 
 from database import get_db
@@ -199,12 +199,15 @@ async def get_forward_active_sessions(
         None,
         description="Filter by status (running, paused, initializing)"
     ),
+    limit: int = Query(20, ge=1, le=100, description="Maximum number of sessions to return"),
 ):
-    """List active forward sessions."""
+    """List active forward sessions - optimized with batched queries and stale session filtering."""
     sessions: List[ForwardActiveSession] = []
     seen_ids: Set[UUID] = set()
     now = datetime.now(timezone.utc)
+    STALE_THRESHOLD_HOURS = 2  # Sessions running > 2 hours with 0 trades are considered stale
     
+    # Collect in-memory sessions first (fast, no DB query) - these are definitely active
     for session_id_str, state in engine.active_sessions.items():
         if state.agent.user_id != current_user.id:
             continue
@@ -214,9 +217,16 @@ async def get_forward_active_sessions(
         stats = state.position_manager.get_stats()
         started_at = state.started_at or now
         elapsed_seconds = int((now - started_at).total_seconds())
+        elapsed_hours = elapsed_seconds / 3600
         status_value = "running" if not state.is_paused else "paused"
+        
         if statuses and status_value not in statuses:
             continue
+        
+        # Filter out stale in-memory sessions (running > 2h with 0 trades)
+        if stats["total_trades"] == 0 and elapsed_hours > STALE_THRESHOLD_HOURS:
+            continue
+        
         sessions.append(
             ForwardActiveSession(
                 id=session_uuid,
@@ -233,6 +243,8 @@ async def get_forward_active_sessions(
         )
         seen_ids.add(session_uuid)
     
+    # Build optimized DB query - single query with join instead of multiple
+    # Filter out sessions that are too old and have no trades
     base_query = (
         select(TestSession, Agent)
         .join(Agent, Agent.id == TestSession.agent_id)
@@ -246,23 +258,49 @@ async def get_forward_active_sessions(
     if agent_id:
         base_query = base_query.where(TestSession.agent_id == agent_id)
     
+    # Order by most recent first, then limit
+    base_query = base_query.order_by(TestSession.started_at.desc().nulls_last(), TestSession.created_at.desc())
+    
+    # Execute single query
     db_result = await db.execute(base_query)
     rows = db_result.all()
-    db_session_ids = [row[0].id for row in rows if row[0].id not in seen_ids]
-    trade_stats = await _get_trade_stats(db, db_session_ids)
     
+    # Batch collect session IDs for trade stats (only for DB sessions not in memory)
+    db_session_ids = [row[0].id for row in rows if row[0].id not in seen_ids]
+    
+    # Single batched query for all trade stats (instead of per-session)
+    trade_stats = await _get_trade_stats(db, db_session_ids) if db_session_ids else {}
+    
+    # Process DB sessions with stale filtering
     for session, agent in rows:
         if session.id in seen_ids:
             continue
+        
+        # Skip if we've reached the limit
+        if len(sessions) >= limit:
+            break
+        
         duration_seconds = session.elapsed_seconds or 0
         if not duration_seconds and session.started_at:
             duration_seconds = int((now - session.started_at).total_seconds())
+        
+        duration_hours = duration_seconds / 3600
         trades_count, win_rate = trade_stats.get(session.id, (0, 0.0))
+        
+        # Filter out stale sessions: running > 2 hours with 0 trades
+        # Also filter out sessions with invalid agent names
+        if trades_count == 0 and duration_hours > STALE_THRESHOLD_HOURS:
+            continue
+        
+        agent_name = agent.name if agent else "Unknown Agent"
+        if not agent_name or len(agent_name.strip()) < 2:
+            continue
+        
         sessions.append(
             ForwardActiveSession(
                 id=session.id,
                 agent_id=session.agent_id,
-                agent_name=agent.name if agent else "Unknown Agent",
+                agent_name=agent_name,
                 asset=session.asset,
                 status=session.status,
                 started_at=session.started_at or session.created_at,
@@ -272,6 +310,167 @@ async def get_forward_active_sessions(
                 win_rate=win_rate
             )
         )
+    
+    # Sort final results: sessions with trades first, then by most recent
+    def sort_key(s: ForwardActiveSession) -> tuple:
+        # Primary: sessions with trades come first (False < True, so trades first)
+        has_trades = s.trades_count == 0
+        # Secondary: most recent first (negative timestamp for descending)
+        timestamp = 0
+        if s.started_at:
+            if isinstance(s.started_at, datetime):
+                timestamp = s.started_at.timestamp()
+            elif hasattr(s.started_at, 'timestamp'):
+                timestamp = s.started_at.timestamp()
+        return (has_trades, -timestamp)
+    
+    sessions.sort(key=sort_key)
+    
+    # Apply limit after sorting
+    sessions = sessions[:limit]
+    
+    return {"sessions": sessions}
+
+
+@router.get("/backtest/active", response_model=ForwardActiveListResponse)
+async def get_backtest_active_sessions(
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+    engine: BacktestEngine = Depends(get_backtest_engine),
+    agent_id: Optional[UUID] = None,
+    statuses: Optional[List[str]] = Query(
+        None,
+        description="Filter by status (running, paused, initializing)"
+    ),
+    limit: int = Query(20, ge=1, le=100, description="Maximum number of sessions to return"),
+):
+    """List active backtest sessions - optimized with batched queries and stale session filtering."""
+    sessions: List[ForwardActiveSession] = []
+    seen_ids: Set[UUID] = set()
+    now = datetime.now(timezone.utc)
+    STALE_THRESHOLD_HOURS = 2  # Sessions running > 2 hours with 0 trades are considered stale
+    
+    # Collect in-memory sessions first (fast, no DB query) - these are definitely active
+    for session_id_str, state in engine.active_sessions.items():
+        if state.agent.user_id != current_user.id:
+            continue
+        if agent_id and state.agent.id != agent_id:
+            continue
+        session_uuid = UUID(session_id_str)
+        stats = state.position_manager.get_stats()
+        started_at = state.started_at or now
+        elapsed_seconds = int((now - started_at).total_seconds())
+        elapsed_hours = elapsed_seconds / 3600
+        status_value = "running" if not state.is_paused else "paused"
+        
+        if statuses and status_value not in statuses:
+            continue
+        
+        # Filter out stale in-memory sessions (running > 2h with 0 trades)
+        if stats["total_trades"] == 0 and elapsed_hours > STALE_THRESHOLD_HOURS:
+            continue
+        
+        sessions.append(
+            ForwardActiveSession(
+                id=session_uuid,
+                agent_id=state.agent.id,
+                agent_name=state.agent.name,
+                asset=state.asset,
+                status=status_value,
+                started_at=started_at,
+                duration_display=_format_duration(elapsed_seconds),
+                current_pnl_pct=stats["equity_change_pct"],
+                trades_count=stats["total_trades"],
+                win_rate=stats["win_rate"]
+            )
+        )
+        seen_ids.add(session_uuid)
+    
+    # Build optimized DB query - single query with join instead of multiple
+    # Filter out sessions that are too old and have no trades
+    base_query = (
+        select(TestSession, Agent)
+        .join(Agent, Agent.id == TestSession.agent_id)
+        .where(TestSession.user_id == current_user.id)
+        .where(TestSession.type == "backtest")
+    )
+    if statuses:
+        base_query = base_query.where(TestSession.status.in_(tuple(statuses)))
+    else:
+        base_query = base_query.where(TestSession.status.in_(("running", "paused", "initializing")))
+    if agent_id:
+        base_query = base_query.where(TestSession.agent_id == agent_id)
+    
+    # Order by most recent first, then limit
+    base_query = base_query.order_by(TestSession.started_at.desc().nulls_last(), TestSession.created_at.desc())
+    
+    # Execute single query
+    db_result = await db.execute(base_query)
+    rows = db_result.all()
+    
+    # Batch collect session IDs for trade stats (only for DB sessions not in memory)
+    db_session_ids = [row[0].id for row in rows if row[0].id not in seen_ids]
+    
+    # Single batched query for all trade stats (instead of per-session)
+    trade_stats = await _get_trade_stats(db, db_session_ids) if db_session_ids else {}
+    
+    # Process DB sessions with stale filtering
+    for session, agent in rows:
+        if session.id in seen_ids:
+            continue
+        
+        # Skip if we've reached the limit
+        if len(sessions) >= limit:
+            break
+        
+        duration_seconds = session.elapsed_seconds or 0
+        if not duration_seconds and session.started_at:
+            duration_seconds = int((now - session.started_at).total_seconds())
+        
+        duration_hours = duration_seconds / 3600
+        trades_count, win_rate = trade_stats.get(session.id, (0, 0.0))
+        
+        # Filter out stale sessions: running > 2 hours with 0 trades
+        # Also filter out sessions with invalid agent names
+        if trades_count == 0 and duration_hours > STALE_THRESHOLD_HOURS:
+            continue
+        
+        agent_name = agent.name if agent else "Unknown Agent"
+        if not agent_name or len(agent_name.strip()) < 2:
+            continue
+        
+        sessions.append(
+            ForwardActiveSession(
+                id=session.id,
+                agent_id=session.agent_id,
+                agent_name=agent_name,
+                asset=session.asset,
+                status=session.status,
+                started_at=session.started_at or session.created_at,
+                duration_display=_format_duration(duration_seconds),
+                current_pnl_pct=float(session.current_pnl_pct or 0),
+                trades_count=trades_count,
+                win_rate=win_rate
+            )
+        )
+    
+    # Sort final results: sessions with trades first, then by most recent
+    def sort_key(s: ForwardActiveSession) -> tuple:
+        # Primary: sessions with trades come first (False < True, so trades first)
+        has_trades = s.trades_count == 0
+        # Secondary: most recent first (negative timestamp for descending)
+        timestamp = 0
+        if s.started_at:
+            if isinstance(s.started_at, datetime):
+                timestamp = s.started_at.timestamp()
+            elif hasattr(s.started_at, 'timestamp'):
+                timestamp = s.started_at.timestamp()
+        return (has_trades, -timestamp)
+    
+    sessions.sort(key=sort_key)
+    
+    # Apply limit after sorting
+    sessions = sessions[:limit]
     
     return {"sessions": sessions}
 
@@ -283,10 +482,11 @@ async def get_forward_status(
     current_user: dict = Depends(get_current_user),
     engine: ForwardEngine = Depends(get_forward_engine)
 ):
-    """Get status for a forward session."""
+    """Get status for a forward session - optimized with single query."""
     session_state = engine.active_sessions.get(str(id))
     now = datetime.now(timezone.utc)
     
+    # Fast path: session is in memory (no DB query)
     if session_state and session_state.agent.user_id == current_user.id:
         stats = session_state.position_manager.get_stats()
         open_pos = _serialize_open_position(session_state.position_manager.get_position())
@@ -323,21 +523,22 @@ async def get_forward_status(
             }
         }
     
+    # Slow path: fetch from DB - optimized single query with joins
     result = await db.execute(
-        select(TestSession).where(
+        select(TestSession, TestResult)
+        .outerjoin(TestResult, TestResult.session_id == TestSession.id)
+        .where(
             TestSession.id == id,
             TestSession.user_id == current_user.id,
             TestSession.type == "forward"
         )
     )
-    session = result.scalar_one_or_none()
-    if not session:
+    row = result.first()
+    
+    if not row:
         raise HTTPException(status_code=404, detail="Session not found")
     
-    test_result_stmt = await db.execute(
-        select(TestResult).where(TestResult.session_id == session.id)
-    )
-    test_result = test_result_stmt.scalar_one_or_none()
+    session, test_result = row
     
     if test_result:
         current_equity = float(test_result.ending_capital)
@@ -348,6 +549,7 @@ async def get_forward_status(
     else:
         current_equity = float(session.current_equity or session.starting_capital)
         pnl_pct = float(session.current_pnl_pct or 0)
+        # Only fetch trade stats if test_result doesn't exist
         stats_map = await _get_trade_stats(db, [session.id])
         trades_count, win_rate = stats_map.get(session.id, (0, 0.0))
         max_drawdown = float(session.max_drawdown_pct or 0)
@@ -474,6 +676,47 @@ async def start_backtest(
     engine: BacktestEngine = Depends(get_backtest_engine)
 ):
     """Start a new backtest session."""
+    # Check for existing active backtests
+    # Check both in-memory sessions and database
+    active_in_memory = any(
+        state.agent.user_id == current_user.id
+        for state in engine.active_sessions.values()
+    )
+    
+    # First, clean up stale "initializing" sessions (stuck for more than 10 minutes)
+    stale_threshold = datetime.now(timezone.utc) - timedelta(minutes=10)
+    stale_sessions_result = await db.execute(
+        select(TestSession)
+        .where(TestSession.user_id == current_user.id)
+        .where(TestSession.type == "backtest")
+        .where(TestSession.status == "initializing")
+        .where(TestSession.created_at < stale_threshold)
+    )
+    stale_sessions = stale_sessions_result.scalars().all()
+    
+    if stale_sessions:
+        logger.info(f"Cleaning up {len(stale_sessions)} stale backtest sessions for user {current_user.id}")
+        for stale_session in stale_sessions:
+            await db.execute(
+                delete(TestSession).where(TestSession.id == stale_session.id)
+            )
+        await db.commit()
+    
+    # Now check for truly active sessions (running, paused, or recent initializing)
+    active_in_db_result = await db.execute(
+        select(TestSession)
+        .where(TestSession.user_id == current_user.id)
+        .where(TestSession.type == "backtest")
+        .where(TestSession.status.in_(("running", "paused", "initializing")))
+    )
+    active_in_db = active_in_db_result.first() is not None
+    
+    if active_in_memory or active_in_db:
+        raise HTTPException(
+            status_code=400,
+            detail="You already have an active backtest. Please stop the existing test before starting a new one."
+        )
+    
     # Verify agent exists and belongs to user
     # Eagerly load api_key relationship to avoid lazy loading issues in background task
     result = await db.execute(
@@ -568,6 +811,7 @@ async def start_backtest(
         starting_capital=request.starting_capital,
         safety_mode=request.safety_mode,
         allow_leverage=request.allow_leverage,
+        playback_speed=request.playback_speed,
         decision_mode=request.decision_mode,
         decision_interval_candles=request.decision_interval_candles,
         indicator_readiness_threshold=request.indicator_readiness_threshold or 80.0,
@@ -628,13 +872,13 @@ async def get_backtest_status(
     current_user: dict = Depends(get_current_user),
     engine: BacktestEngine = Depends(get_backtest_engine)
 ):
-    """Get backtest session status."""
-    # Check active sessions first (in memory)
+    """Get backtest session status - optimized with single query."""
+    # Check active sessions first (in memory - fastest path)
     session_id_str = str(id)
     session_state = engine.active_sessions.get(session_id_str)
     
     if session_state:
-        # Return real-time state
+        # Return real-time state (no DB query needed)
         stats = session_state.position_manager.get_stats()
         current_equity = stats["current_equity"]
         pnl_pct = stats["equity_change_pct"]
@@ -672,34 +916,33 @@ async def get_backtest_status(
             }
         }
     
-    # If not active, fetch from DB
+    # If not active, fetch from DB - optimized single query with join
     result = await db.execute(
-        select(TestSession)
-        .options(selectinload(TestSession.agent))
+        select(TestSession, TestResult, Agent)
+        .outerjoin(TestResult, TestResult.session_id == TestSession.id)
+        .outerjoin(Agent, Agent.id == TestSession.agent_id)
         .where(TestSession.id == id, TestSession.user_id == current_user.id)
     )
-    session = result.scalar_one_or_none()
+    row = result.first()
     
-    if not session:
+    if not row:
         raise HTTPException(status_code=404, detail="Session not found")
-        
-    result_stmt = await db.execute(
-        select(TestResult).where(TestResult.session_id == session.id)
-    )
-    test_result = result_stmt.scalar_one_or_none()
     
-    current_equity = float(session.current_equity or session.starting_capital)
-    pnl_pct = float(session.current_pnl_pct or 0)
-    max_drawdown_pct = float(session.max_drawdown_pct or 0)
-    trades_count = 0
-    win_rate = 0.0
+    session, test_result, agent = row
+    
+    # Use test_result if available, otherwise fall back to session
     if test_result:
         current_equity = float(test_result.ending_capital)
         pnl_pct = float(test_result.total_pnl_pct)
         trades_count = test_result.total_trades
         win_rate = float(test_result.win_rate or 0)
-        if test_result.max_drawdown_pct is not None:
-            max_drawdown_pct = float(test_result.max_drawdown_pct)
+        max_drawdown_pct = float(test_result.max_drawdown_pct or 0)
+    else:
+        current_equity = float(session.current_equity or session.starting_capital)
+        pnl_pct = float(session.current_pnl_pct or 0)
+        max_drawdown_pct = float(session.max_drawdown_pct or 0)
+        trades_count = 0
+        win_rate = 0.0
     
     open_position = _open_position_from_dict(session.open_position)
     
@@ -713,13 +956,9 @@ async def get_backtest_status(
     if not elapsed_seconds and session.started_at and session.completed_at:
         elapsed_seconds = int((session.completed_at - session.started_at).total_seconds())
     
-    # Get agent info if available
-    agent_id = None
-    agent_name = None
-    if session.agent_id:
-        agent_id = session.agent_id
-        if session.agent:
-            agent_name = session.agent.name
+    # Get agent info
+    agent_id = session.agent_id
+    agent_name = agent.name if agent else None
     
     return {
         "session": {
@@ -812,6 +1051,47 @@ async def start_forward_test(
     engine: ForwardEngine = Depends(get_forward_engine)
 ):
     """Start a new forward test session."""
+    # Check for existing active forward tests
+    # Check both in-memory sessions and database
+    active_in_memory = any(
+        state.agent.user_id == current_user.id
+        for state in engine.active_sessions.values()
+    )
+    
+    # First, clean up stale "initializing" sessions (stuck for more than 10 minutes)
+    stale_threshold = datetime.now(timezone.utc) - timedelta(minutes=10)
+    stale_sessions_result = await db.execute(
+        select(TestSession)
+        .where(TestSession.user_id == current_user.id)
+        .where(TestSession.type == "forward")
+        .where(TestSession.status == "initializing")
+        .where(TestSession.created_at < stale_threshold)
+    )
+    stale_sessions = stale_sessions_result.scalars().all()
+    
+    if stale_sessions:
+        logger.info(f"Cleaning up {len(stale_sessions)} stale forward test sessions for user {current_user.id}")
+        for stale_session in stale_sessions:
+            await db.execute(
+                delete(TestSession).where(TestSession.id == stale_session.id)
+            )
+        await db.commit()
+    
+    # Now check for truly active sessions (running, paused, or recent initializing)
+    active_in_db_result = await db.execute(
+        select(TestSession)
+        .where(TestSession.user_id == current_user.id)
+        .where(TestSession.type == "forward")
+        .where(TestSession.status.in_(("running", "paused", "initializing")))
+    )
+    active_in_db = active_in_db_result.first() is not None
+    
+    if active_in_memory or active_in_db:
+        raise HTTPException(
+            status_code=400,
+            detail="You already have an active forward test. Please stop the existing test before starting a new one."
+        )
+    
     # Eagerly load api_key relationship to avoid lazy loading issues in background task
     agent_result = await db.execute(
         select(Agent)
@@ -892,4 +1172,71 @@ async def start_forward_test(
             websocket_url=_build_ws_url(f"/ws/forward/{session_id}")
         ),
         "message": "Forward test started"
+    }
+
+
+@router.delete("/cleanup", response_model=Dict[str, Any])
+async def cleanup_active_sessions(
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+    engine_backtest: BacktestEngine = Depends(get_backtest_engine),
+    engine_forward: ForwardEngine = Depends(get_forward_engine),
+    session_type: Optional[str] = Query(None, description="Filter by type: 'backtest' or 'forward'. If not provided, cleans up both.")
+):
+    """
+    Clean up all active test sessions for the current user.
+    
+    This will:
+    1. Stop all in-memory sessions (both backtest and forward)
+    2. Delete all active sessions from database (status: running, paused, initializing)
+    3. Related data (trades, ai_thoughts, etc.) will be deleted via CASCADE
+    """
+    deleted_count = 0
+    stopped_in_memory = 0
+    
+    # Stop in-memory backtest sessions
+    backtest_sessions_to_stop = [
+        session_id for session_id, state in engine_backtest.active_sessions.items()
+        if state.agent.user_id == current_user.id
+        and (not session_type or session_type == "backtest")
+    ]
+    for session_id in backtest_sessions_to_stop:
+        try:
+            await engine_backtest.stop_backtest(session_id, close_position=False)
+            stopped_in_memory += 1
+        except Exception as e:
+            logger.warning(f"Failed to stop backtest session {session_id}: {e}")
+    
+    # Stop in-memory forward sessions
+    forward_sessions_to_stop = [
+        session_id for session_id, state in engine_forward.active_sessions.items()
+        if state.agent.user_id == current_user.id
+        and (not session_type or session_type == "forward")
+    ]
+    for session_id in forward_sessions_to_stop:
+        try:
+            await engine_forward.stop_forward_test(session_id, close_position=False)
+            stopped_in_memory += 1
+        except Exception as e:
+            logger.warning(f"Failed to stop forward session {session_id}: {e}")
+    
+    # Delete active sessions from database
+    delete_query = (
+        delete(TestSession)
+        .where(TestSession.user_id == current_user.id)
+        .where(TestSession.status.in_(("running", "paused", "initializing")))
+    )
+    
+    if session_type:
+        delete_query = delete_query.where(TestSession.type == session_type)
+    
+    result = await db.execute(delete_query)
+    deleted_count = result.rowcount
+    await db.commit()
+    
+    return {
+        "message": "Cleanup completed",
+        "deleted_sessions": deleted_count,
+        "stopped_in_memory": stopped_in_memory,
+        "session_type": session_type or "both"
     }

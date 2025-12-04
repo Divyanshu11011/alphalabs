@@ -86,9 +86,15 @@ export function StatsCardRow() {
     return <StatSkeletonRow />;
   }
 
-  const winRateChange = stats.trends.winRateChange ?? 0;
+  const winRateChange = stats.trends.winRateChange;
   const winRateDirection =
-    winRateChange > 0 ? "up" : winRateChange < 0 ? "down" : "neutral";
+    winRateChange !== undefined && winRateChange !== null
+      ? winRateChange > 0
+        ? "up"
+        : winRateChange < 0
+        ? "down"
+        : "neutral"
+      : "neutral";
 
   return (
     <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -97,7 +103,7 @@ export function StatsCardRow() {
         value={stats.totalAgents}
         icon={Bot}
         trend={{
-          value: `${stats.trends.agentsThisWeek >= 0 ? "↑" : ""}${stats.trends.agentsThisWeek} this week`,
+          value: `${stats.trends.agentsThisWeek} this week`,
           direction: stats.trends.agentsThisWeek >= 0 ? "up" : "neutral",
         }}
       />
@@ -106,7 +112,7 @@ export function StatsCardRow() {
         value={stats.testsRun}
         icon={FlaskConical}
         trend={{
-          value: `${stats.trends.testsToday >= 0 ? "↑" : ""}${stats.trends.testsToday} today`,
+          value: `${stats.trends.testsToday} today`,
           direction: stats.trends.testsToday >= 0 ? "up" : "neutral",
         }}
       />
@@ -121,10 +127,19 @@ export function StatsCardRow() {
         title="Avg Win Rate"
         value={formatPercent(stats.avgWinRate, 1)}
         icon={Target}
-        trend={{
-          value: `${winRateChange > 0 ? "↑" : winRateChange < 0 ? "↓" : "↔"}${Math.abs(winRateChange).toFixed(1)}% vs last period`,
-          direction: winRateDirection,
-        }}
+        trend={
+          winRateChange !== undefined && winRateChange !== null && winRateChange !== 0
+            ? {
+                value: `${Math.abs(winRateChange).toFixed(1)}% vs last period`,
+                direction: winRateDirection,
+              }
+            : undefined
+        }
+        subtitle={
+          winRateChange === undefined || winRateChange === null || winRateChange === 0
+            ? "No change from last period"
+            : undefined
+        }
       />
     </div>
   );

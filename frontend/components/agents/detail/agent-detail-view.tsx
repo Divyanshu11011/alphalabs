@@ -30,41 +30,7 @@ import { toast } from "sonner";
 import { useAgents } from "@/hooks/use-agents";
 import { useAgentsStore } from "@/lib/stores";
 import { DeleteAgentDialog } from "../delete-agent-dialog";
-import type { AgentDetailViewProps, Agent, AgentStats } from "@/types/agent";
-
-// Mock data - in real app from API
-const mockAgent: Agent = {
-  id: "1",
-  name: "α-1",
-  model: "DeepSeek-R1",
-  mode: "monk",
-  indicators: ["RSI", "MACD", "EMA", "ATR", "Volume", "Stochastic", "CCI", "ADX"],
-  customIndicators: [{ name: "Secret_Sauce", formula: "(close - sma_50) / atr_14" }],
-  strategyPrompt: `My trading philosophy:
-
-1. Only enter LONG positions when RSI is below 30 (oversold) AND MACD histogram is turning positive (momentum shift).
-
-2. Only enter SHORT positions when RSI is above 70 (overbought) AND price is below EMA_50 (bearish trend).
-
-3. Always set stop loss at 1.5x ATR below entry for LONG, above entry for SHORT.
-
-4. Take profit at 2x the stop loss distance (2:1 R:R).
-
-5. If uncertain, HOLD. Capital preservation is priority.`,
-  apiKeyMasked: "sk-or-v1-••••••••",
-  testsRun: 12,
-  bestPnL: 47.2,
-  createdAt: new Date("2025-11-15"),
-  updatedAt: new Date("2025-11-24"),
-  isArchived: false,
-  stats: {
-    totalTests: 12,
-    profitableTests: 7,
-    bestPnL: 47.2,
-    avgWinRate: 58,
-    avgDrawdown: -8.3,
-  } as AgentStats,
-};
+import type { AgentDetailViewProps } from "@/types/agent";
 
 export function AgentDetailView({ agentId }: AgentDetailViewProps) {
   const router = useRouter();
@@ -76,8 +42,22 @@ export function AgentDetailView({ agentId }: AgentDetailViewProps) {
   // Find the actual agent from store
   const agent = agents.find((a) => a.id === agentId);
   
-  // Fallback to mock if not found (for development)
-  const displayAgent = agent || mockAgent;
+  // If agent not found, show error state
+  if (!agent) {
+    return (
+      <div className="flex flex-col items-center justify-center py-12 text-center">
+        <h3 className="font-mono text-lg font-medium">Agent not found</h3>
+        <p className="mt-2 max-w-sm text-sm text-muted-foreground">
+          The agent you're looking for doesn't exist or has been deleted.
+        </p>
+        <Button asChild className="mt-4">
+          <Link href="/dashboard/agents">Back to Agents</Link>
+        </Button>
+      </div>
+    );
+  }
+
+  const displayAgent = agent;
 
   const handleDuplicate = async () => {
     if (isDuplicating || !agent) {

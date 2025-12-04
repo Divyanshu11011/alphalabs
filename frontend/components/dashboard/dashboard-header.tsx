@@ -19,6 +19,8 @@ import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { useAgents } from "@/hooks/use-agents";
 import { useAgentsStore, useDynamicIslandStore } from "@/lib/stores";
+import { useForwardSessions } from "@/hooks/use-forward-sessions";
+import { useBacktestSessions } from "@/hooks/use-backtest-sessions";
 import {
   ExpandableScreen,
   ExpandableScreenTrigger,
@@ -49,41 +51,46 @@ export function DashboardHeader() {
   // Dynamic Island
   const { showIdle, showLiveSession, hide } = useDynamicIslandStore();
   
-  // Show island state on dashboard mount
+  // Get active forward and backtest sessions from shared context (avoid duplicate API calls)
+  // Note: LiveSessionsPanel also uses this hook, but React will deduplicate the requests
+  // due to the same hook instance. For better performance, consider using a shared store.
+  const { sessions: forwardSessions } = useForwardSessions(15000); // Poll every 15 seconds
+  const { sessions: backtestSessions } = useBacktestSessions(15000); // Poll every 15 seconds
+  
+  // Show island state based on active sessions (prioritize forward, then backtest)
   useEffect(() => {
-    // Import dynamically to avoid SSR issues
-    const checkLiveSessions = async () => {
-      const { getPrimaryLiveSession } = await import("@/lib/dummy-island-data");
-      const liveSession = getPrimaryLiveSession();
-      
-      if (liveSession) {
-        // Show live session status with ALL expanded view data
-        showLiveSession({
-          agentName: liveSession.agentName,
-          pnl: liveSession.pnl,
-          duration: liveSession.duration,
-          status: liveSession.status,
-          // Include expanded view fields
-          openPositions: liveSession.openPositions,
-          totalTrades: liveSession.totalTrades,
-          winRate: liveSession.winRate,
-          equity: liveSession.equity,
-          nextDecisionIn: liveSession.nextDecisionIn,
-        });
-      } else {
-        // No active sessions, show idle state
-        showIdle();
-      }
-    };
+    const primaryForwardSession = forwardSessions.find(s => s.status === "running" || s.status === "paused");
+    const primaryBacktestSession = backtestSessions.find(s => s.status === "running" || s.status === "paused");
     
-    // Small delay to let the page render first
-    const timer = setTimeout(checkLiveSessions, 500);
+    // Prioritize forward test sessions
+    const primarySession = primaryForwardSession || primaryBacktestSession;
+    const sessionType = primaryForwardSession ? "forward" : "backtest";
+    
+    if (primarySession) {
+      // Show live session status with ALL expanded view data
+      showLiveSession({
+        agentName: primarySession.agentName,
+        pnl: primarySession.currentPnlPct,
+        duration: primarySession.durationDisplay,
+        status: primarySession.status as "running" | "paused",
+        sessionId: primarySession.id,
+        sessionType: sessionType,
+        // Include expanded view fields
+        openPositions: undefined, // Not available in current API response
+        totalTrades: primarySession.tradesCount,
+        winRate: primarySession.winRate,
+        equity: undefined, // Not available in current API response
+        nextDecisionIn: undefined, // Not available in current API response
+      });
+    } else {
+      // No active sessions, show idle state
+      showIdle();
+    }
     
     return () => {
-      clearTimeout(timer);
-      hide();
+      // Don't hide on unmount - let the island persist
     };
-  }, [showIdle, showLiveSession, hide]);
+  }, [forwardSessions, backtestSessions, showIdle, showLiveSession]);
   
   // Quick test state
   const [selectedAgent, setSelectedAgent] = useState<string>("");

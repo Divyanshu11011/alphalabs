@@ -1,3 +1,5 @@
+"use client";
+
 /**
  * Dynamic Island Store
  * Manages the global Dynamic Island state for AI presence, notifications, and celebrations
@@ -40,6 +42,9 @@ export interface NarratorData {
   // Expanded view data
   details?: string;
   metrics?: { label: string; value: string }[];
+  // Optional separate fields for wrapped test results
+  pnl?: number | null;
+  resultId?: string | null;
 }
 
 export interface CelebrationData {
@@ -79,6 +84,9 @@ export interface LiveSessionData {
   pnl: number;
   duration: string;
   status: "running" | "paused";
+  // Session navigation
+  sessionId?: string;
+  sessionType?: "backtest" | "forward";
   // Expanded view data
   openPositions?: number;
   totalTrades?: number;
@@ -89,6 +97,9 @@ export interface LiveSessionData {
 
 export interface AnalyzingData {
   message?: string;
+  // Session navigation
+  sessionId?: string;
+  sessionType?: "backtest" | "forward";
   // Expanded view data
   phase?: "scanning" | "analyzing" | "deciding" | "executing";
   progress?: number;

@@ -10,7 +10,7 @@ import {
   Settings,
   Bell,
 } from "lucide-react";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import Link from "next/link";
 
 import {
@@ -47,6 +47,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useNotifications } from "@/hooks/use-notifications";
+import { useAgents } from "@/hooks/use-agents";
 import type { NotificationItem } from "@/types";
 
 // Notification content shared between mobile and desktop
@@ -69,6 +70,27 @@ function NotificationList({
   isMobile?: boolean;
   isLoading?: boolean;
 }) {
+  const router = useRouter();
+
+  const handleNotificationClick = async (
+    e: React.MouseEvent<HTMLAnchorElement>,
+    notification: NotificationItem
+  ) => {
+    e.preventDefault();
+    
+    // Mark as read
+    await onNotificationClick(notification.id);
+    
+    // Navigate if there's a valid actionUrl
+    if (notification.actionUrl && notification.actionUrl !== "#") {
+      try {
+        router.push(notification.actionUrl);
+      } catch (error) {
+        console.error("Failed to navigate to notification URL:", error);
+      }
+    }
+  };
+
   return (
     <>
       <div className={cn(
@@ -141,10 +163,10 @@ function NotificationList({
                 key={notification.id}
                 href={notification.actionUrl || "#"}
                 className={cn(
-                  "block p-3 transition-colors hover:bg-muted/50",
+                  "block p-3 transition-colors hover:bg-muted/50 cursor-pointer",
                   !notification.isRead && "bg-muted/30"
                 )}
-                onClick={() => void onNotificationClick(notification.id)}
+                onClick={(e) => void handleNotificationClick(e, notification)}
               >
                 <div className="flex items-start gap-3">
                   <div
@@ -274,7 +296,7 @@ function NotificationBell({ isCollapsed }: { isCollapsed: boolean }) {
   );
 }
 
-// Navigation items configuration
+// Navigation items configuration - badge will be set dynamically
 const mainNavItems = [
   {
     title: "Dashboard",
@@ -285,7 +307,6 @@ const mainNavItems = [
     title: "My Agents",
     url: "/dashboard/agents",
     icon: Bot,
-    badge: "3", // This would come from state/API
   },
 ];
 
@@ -316,6 +337,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   const pathname = usePathname();
   const { state } = useSidebar();
   const isCollapsed = state === "collapsed";
+  const { total: agentCount } = useAgents(); // Get agent count (excludes archived by default)
 
   const isActive = (url: string) => {
     if (url === "/dashboard") {
@@ -336,25 +358,29 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
           <SidebarGroupLabel>Main</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
-              {mainNavItems.map((item) => (
-                <SidebarMenuItem key={item.title}>
-                  <SidebarMenuButton
-                    asChild
-                    isActive={isActive(item.url)}
-                    tooltip={item.title}
-                  >
-                    <Link href={item.url}>
-                      <item.icon className="h-4 w-4" />
-                      <span>{item.title}</span>
-                    </Link>
-                  </SidebarMenuButton>
-                  {item.badge && !isCollapsed && (
-                    <SidebarMenuBadge className="bg-muted text-muted-foreground">
-                      {item.badge}
-                    </SidebarMenuBadge>
-                  )}
-                </SidebarMenuItem>
-              ))}
+              {mainNavItems.map((item) => {
+                // Show agent count badge for "My Agents"
+                const showBadge = item.title === "My Agents" && agentCount > 0;
+                return (
+                  <SidebarMenuItem key={item.title}>
+                    <SidebarMenuButton
+                      asChild
+                      isActive={isActive(item.url)}
+                      tooltip={item.title}
+                    >
+                      <Link href={item.url}>
+                        <item.icon className="h-4 w-4" />
+                        <span>{item.title}</span>
+                      </Link>
+                    </SidebarMenuButton>
+                    {showBadge && !isCollapsed && (
+                      <SidebarMenuBadge className="bg-muted text-muted-foreground">
+                        {agentCount}
+                      </SidebarMenuBadge>
+                    )}
+                  </SidebarMenuItem>
+                );
+              })}
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>

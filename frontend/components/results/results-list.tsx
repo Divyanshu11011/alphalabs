@@ -87,16 +87,17 @@ function ResultCard({ result }: ResultCardProps) {
                 </Link>
               </Button>
               {isProfitable && (
-                <>
-                  <Button variant="ghost" size="sm" className="h-8 px-2 sm:px-3 text-xs sm:text-sm gap-1">
-                    <FileText className="h-3 w-3" />
-                    <span className="hidden xs:inline">Cert</span>
-                  </Button>
-                  <Button variant="ghost" size="sm" className="h-8 px-2 sm:px-3 text-xs sm:text-sm gap-1">
+                <Button 
+                  variant="ghost" 
+                  size="sm" 
+                  asChild
+                  className="h-8 px-2 sm:px-3 text-xs sm:text-sm gap-1"
+                >
+                  <Link href={`/dashboard/results/${result.id}#certificate`}>
                     <Share2 className="h-3 w-3" />
-                    <span className="hidden xs:inline">Share</span>
-                  </Button>
-                </>
+                    <span className="hidden xs:inline">Share Certificate</span>
+                  </Link>
+                </Button>
               )}
             </div>
           </div>

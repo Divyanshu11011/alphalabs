@@ -34,7 +34,9 @@ import { useAgentsStore, useArenaStore, useDynamicIslandStore, useResultsStore }
 import { useArenaApi } from "@/hooks/use-arena-api";
 import { useBacktestWebSocket, type WebSocketEvent } from "@/hooks/use-backtest-websocket";
 import { useResultsApi } from "@/hooks/use-results-api";
+import { useApiClient } from "@/lib/api";
 import { NARRATOR_MESSAGES } from "@/lib/dummy-island-data";
+import { toast } from "sonner";
 import type { CandleData, AIThought, Trade, PlaybackSpeed, TradeMarker } from "@/types";
 
 interface BattleScreenProps {
@@ -59,6 +61,7 @@ export function BattleScreen({ sessionId }: BattleScreenProps) {
   const { triggerRefresh: triggerResultsRefresh } = useResultsStore();
   const { getBacktestStatus } = useArenaApi();
   const { fetchTrades, fetchReasoning } = useResultsApi();
+  const { post } = useApiClient();
   
   // Dynamic Island controls
   const {
@@ -174,6 +177,8 @@ export function BattleScreen({ sessionId }: BattleScreenProps) {
             message: NARRATOR_MESSAGES.analyzing,
             phase: "analyzing",
             currentAsset: asset.toUpperCase().replace("-", "/"),
+            sessionId: sessionId,
+            sessionType: "backtest",
           });
         }
         break;
@@ -279,25 +284,54 @@ export function BattleScreen({ sessionId }: BattleScreenProps) {
     handleWebSocketEvent
   );
 
-  // Fetch initial session status
+  // Memoize previous status to avoid unnecessary updates
+  const previousStatusRef = useRef<typeof sessionStatus>(null);
+
+  // Deep equality check for status
+  const statusChanged = useCallback((newStatus: typeof sessionStatus, prevStatus: typeof sessionStatus): boolean => {
+    if (!prevStatus) return true; // First load
+    if (!newStatus) return false;
+    
+    // Compare all relevant fields
+    return (
+      newStatus.status !== prevStatus.status ||
+      newStatus.current_candle !== prevStatus.current_candle ||
+      newStatus.total_candles !== prevStatus.total_candles ||
+      Math.abs(newStatus.current_equity - prevStatus.current_equity) > 0.01 ||
+      Math.abs(newStatus.current_pnl_pct - prevStatus.current_pnl_pct) > 0.0001 ||
+      newStatus.trades_count !== prevStatus.trades_count ||
+      Math.abs(newStatus.win_rate - prevStatus.win_rate) > 0.0001 ||
+      newStatus.agent_id !== prevStatus.agent_id ||
+      newStatus.agent_name !== prevStatus.agent_name ||
+      newStatus.asset !== prevStatus.asset
+    );
+  }, []);
+
+  // Fetch initial session status - optimized to show UI immediately
   useEffect(() => {
     const fetchInitialStatus = async () => {
       if (!sessionId) return;
       
       try {
+        // Don't block UI - show loading state but allow WebSocket to start
         setIsLoading(true);
         setError(null);
         
         const status = await getBacktestStatus(sessionId);
-        setSessionStatus(status);
-        // Update Zustand store with initial status
-        updateSessionStats(sessionId, {
-          equity: status.current_equity,
-          pnl: status.current_pnl_pct,
-          status: status.status,
-          currentCandle: status.current_candle,
-          totalCandles: status.total_candles,
-        });
+        
+        // Only update if status actually changed (memoization)
+        if (statusChanged(status, previousStatusRef.current)) {
+          previousStatusRef.current = status;
+          setSessionStatus(status);
+          // Update Zustand store with initial status
+          updateSessionStats(sessionId, {
+            equity: status.current_equity,
+            pnl: status.current_pnl_pct,
+            status: status.status,
+            currentCandle: status.current_candle,
+            totalCandles: status.total_candles,
+          });
+        }
         
         // If session is completed, fetch trades and thoughts from results
         if (status.status === "completed") {
@@ -308,21 +342,29 @@ export function BattleScreen({ sessionId }: BattleScreenProps) {
         console.error("Failed to fetch session status:", err);
         setError(err instanceof Error ? err.message : "Failed to load session");
       } finally {
+        // Don't block UI - allow WebSocket data to render even if initial fetch is slow
         setIsLoading(false);
       }
     };
 
-    fetchInitialStatus();
+    // Fetch in background, don't block render
+    void fetchInitialStatus();
     
-    // Poll for status updates every 5 seconds if not connected via WebSocket
+    // Poll for status updates every 10 seconds if not connected via WebSocket (reduced frequency)
     const pollInterval = setInterval(() => {
       if (!isConnected && sessionId) {
-        getBacktestStatus(sessionId).then(setSessionStatus).catch(console.error);
+        getBacktestStatus(sessionId).then((newStatus) => {
+          // Only update if status actually changed (memoization)
+          if (statusChanged(newStatus, previousStatusRef.current)) {
+            previousStatusRef.current = newStatus;
+            setSessionStatus(newStatus);
+          }
+        }).catch(console.error);
       }
-    }, 5000);
+    }, 10000); // Increased from 5s to 10s to reduce load
 
     return () => clearInterval(pollInterval);
-  }, [sessionId, getBacktestStatus, isConnected]);
+  }, [sessionId, getBacktestStatus, isConnected, updateSessionStats, statusChanged]);
 
   // Sync WebSocket state with Zustand store
   useEffect(() => {
@@ -428,20 +470,40 @@ export function BattleScreen({ sessionId }: BattleScreenProps) {
 
   const handleStop = useCallback(async () => {
     try {
-      // Call stop API endpoint
-      const { post } = await import("@/lib/api").then(m => m.useApiClient());
-      // For now, just navigate - we'll add stop API call if needed
-      if (resultId) {
+      // If session is already completed, just navigate to result
+      if (sessionStatus?.status === "completed" && resultId) {
+        router.push(`/dashboard/results/${resultId}`);
+        return;
+      }
+      
+      // If session is still running, call stop API
+      if (sessionStatus?.status === "running" || sessionStatus?.status === "paused") {
+        const response = await post(`/api/arena/backtest/${sessionId}/stop`, {
+          close_position: true,
+        }) as { result_id?: string };
+        if (response?.result_id) {
+          router.push(`/dashboard/results/${response.result_id}`);
+        } else {
+          router.push("/dashboard/results");
+        }
+      } else if (resultId) {
+        // Session completed, navigate to result
         router.push(`/dashboard/results/${resultId}`);
       } else {
-        // Try to find result or navigate to results list
-        router.push(`/dashboard/results`);
+        // Fallback to results list
+        router.push("/dashboard/results");
       }
     } catch (err) {
       console.error("Error stopping session:", err);
-      router.push(`/dashboard/results`);
+      toast.error(err instanceof Error ? err.message : "Failed to stop session");
+      // Still try to navigate if we have resultId
+      if (resultId) {
+        router.push(`/dashboard/results/${resultId}`);
+      } else {
+        router.push("/dashboard/results");
+      }
     }
-  }, [router, resultId]);
+  }, [router, resultId, sessionId, sessionStatus?.status, post]);
 
   // ============================================
   // DYNAMIC ISLAND TRIGGERS
@@ -470,6 +532,8 @@ export function BattleScreen({ sessionId }: BattleScreenProps) {
           message: NARRATOR_MESSAGES.analyzing,
           phase,
           currentAsset: asset.toUpperCase().replace("-", "/"),
+          sessionId: sessionId,
+          sessionType: "backtest",
         });
       }
     } else if (sessionStatus?.status === "paused" && currentCandle > 0 && progress < 100) {
@@ -552,15 +616,16 @@ export function BattleScreen({ sessionId }: BattleScreenProps) {
   const hiddenThoughts = Math.max(thoughts.length - visibleThoughts.length, 0);
   const hiddenTrades = Math.max(trades.length - visibleTrades.length, 0);
 
-  // Show loading or *fatal* error state
-  if (isLoading) {
+  // Show minimal loading state - don't block UI completely
+  // WebSocket will start connecting immediately and data will flow in
+  if (isLoading && !sessionStatus && candles.length === 0) {
     return (
       <div className="flex items-center justify-center min-h-[calc(100vh-120px)]">
         <Card className="border-border/50 bg-card/30">
           <CardContent className="p-8 text-center">
             <div className="flex flex-col items-center gap-4">
               <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
-              <p className="text-sm text-muted-foreground">Loading session data...</p>
+              <p className="text-sm text-muted-foreground">Connecting to session...</p>
             </div>
           </CardContent>
         </Card>
@@ -719,12 +784,12 @@ export function BattleScreen({ sessionId }: BattleScreenProps) {
               variant="outline"
               size="sm"
               onClick={async () => {
-                // Call pause API
                 try {
-                  const { post } = await import("@/lib/api").then(m => m.useApiClient());
-                  // TODO: Implement pause API call
+                  await post(`/api/arena/backtest/${sessionId}/pause`);
+                  // Status will be updated via WebSocket
                 } catch (err) {
                   console.error("Error pausing:", err);
+                  toast.error(err instanceof Error ? err.message : "Failed to pause backtest");
                 }
               }}
               className="gap-1 h-7 px-2 text-xs"
@@ -739,12 +804,12 @@ export function BattleScreen({ sessionId }: BattleScreenProps) {
               variant="outline"
               size="sm"
               onClick={async () => {
-                // Call resume API
                 try {
-                  const { post } = await import("@/lib/api").then(m => m.useApiClient());
-                  // TODO: Implement resume API call
+                  await post(`/api/arena/backtest/${sessionId}/resume`);
+                  // Status will be updated via WebSocket
                 } catch (err) {
                   console.error("Error resuming:", err);
+                  toast.error(err instanceof Error ? err.message : "Failed to resume backtest");
                 }
               }}
               className="gap-1 h-7 px-2 text-xs"
@@ -759,13 +824,18 @@ export function BattleScreen({ sessionId }: BattleScreenProps) {
               variant="destructive" 
               size="sm" 
               onClick={async () => {
-                // Call stop API
                 try {
-                  const { post } = await import("@/lib/api").then(m => m.useApiClient());
-                  // TODO: Implement stop API call
-                  handleStop();
+                  const response = await post(`/api/arena/backtest/${sessionId}/stop`, {
+                    close_position: true,
+                  }) as { result_id?: string };
+                  if (response?.result_id) {
+                    router.push(`/dashboard/results/${response.result_id}`);
+                  } else {
+                    router.push("/dashboard/results");
+                  }
                 } catch (err) {
                   console.error("Error stopping:", err);
+                  toast.error(err instanceof Error ? err.message : "Failed to stop backtest");
                 }
               }} 
               className="h-7 px-2"
@@ -777,7 +847,13 @@ export function BattleScreen({ sessionId }: BattleScreenProps) {
           {sessionStatus?.status === "completed" && (
             <Button 
               size="sm" 
-              onClick={handleStop} 
+              onClick={() => {
+                if (resultId) {
+                  router.push(`/dashboard/results/${resultId}`);
+                } else {
+                  router.push("/dashboard/results");
+                }
+              }} 
               className="h-7 px-2 text-xs bg-[hsl(var(--accent-profit))] text-black hover:bg-[hsl(var(--accent-profit))]/90"
             >
               View Results

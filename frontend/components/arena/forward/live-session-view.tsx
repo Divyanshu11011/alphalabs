@@ -6,8 +6,6 @@ import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "motion/react";
 import {
   ChevronLeft,
-  Play,
-  Pause,
   Square,
   TrendingUp,
   TrendingDown,
@@ -51,11 +49,8 @@ import { useApiClient } from "@/lib/api";
 import { useArenaApi } from "@/hooks/use-arena-api";
 import { useForwardWebSocket, WebSocketEvent } from "@/hooks/use-forward-websocket";
 import { useAgentsStore, useArenaStore, useDynamicIslandStore } from "@/lib/stores";
-import {
-  NARRATOR_MESSAGES,
-  getRandomNarratorMessage,
-  createMockAlphaData,
-} from "@/lib/dummy-island-data";
+import { websocketManager } from "@/lib/websocket-manager";
+// Removed dummy island data imports - using real WebSocket events instead
 import type { CandleData, Trade, Position, AIThought as AIThoughtType } from "@/types";
 import type { ForwardStatusResponse } from "@/types/arena";
 
@@ -81,8 +76,9 @@ export function LiveSessionView({ sessionId }: LiveSessionViewProps) {
   const [nextAIDecisionState, setNextAIDecisionState] = useState<number | null>(null);
   const [isPausedState, setIsPausedState] = useState(false);
   const [isConnectedState, setIsConnectedState] = useState(false);
+  const [isStopping, setIsStopping] = useState(false);
+  const [isStopped, setIsStopped] = useState(false);
   const [forwardError, setForwardError] = useState<string | null>(null);
-  const [pauseError, setPauseError] = useState<string | null>(null);
   const [stopError, setStopError] = useState<string | null>(null);
   
   // Track last price to avoid unnecessary updates
@@ -107,34 +103,61 @@ export function LiveSessionView({ sessionId }: LiveSessionViewProps) {
     return `${seconds}s`;
   };
 
+  // Memoize previous status to avoid unnecessary updates
+  const previousStatusRef = useRef<ForwardStatusResponse | null>(null);
+
+  // Deep equality check for forward status
+  const statusChanged = useCallback((newStatus: ForwardStatusResponse, prevStatus: ForwardStatusResponse | null): boolean => {
+    if (!prevStatus) return true; // First load
+    
+    return (
+      newStatus.status !== prevStatus.status ||
+      newStatus.elapsed_seconds !== prevStatus.elapsed_seconds ||
+      Math.abs(newStatus.current_equity - prevStatus.current_equity) > 0.01 ||
+      Math.abs(newStatus.current_pnl_pct - prevStatus.current_pnl_pct) > 0.0001 ||
+      newStatus.trades_count !== prevStatus.trades_count ||
+      Math.abs(newStatus.win_rate - prevStatus.win_rate) > 0.0001 ||
+      newStatus.next_candle_eta !== prevStatus.next_candle_eta ||
+      newStatus.asset !== prevStatus.asset ||
+      (newStatus.open_position?.type !== prevStatus.open_position?.type) ||
+      (newStatus.open_position?.entry_price !== prevStatus.open_position?.entry_price) ||
+      (Math.abs((newStatus.open_position?.unrealized_pnl ?? 0) - (prevStatus.open_position?.unrealized_pnl ?? 0)) > 0.01)
+    );
+  }, []);
+
   const fetchSessionStatus = useCallback(async () => {
     setForwardError(null);
     try {
       const status = await getForwardStatus(sessionId);
-      setSessionStats(status);
-      setIsPausedState(status.status === "paused");
-      setRunningTimeState(formatRunningTime(status.elapsed_seconds));
-      setNextDecisionState(status.next_candle_eta ?? null);
-      if (status.open_position) {
-        setPositionsState([
-          {
-            type: status.open_position.type,
-            entryPrice: status.open_position.entry_price,
-            size: 0,
-            leverage: 1,
-            stopLoss: 0,
-            takeProfit: 0,
-            unrealizedPnL: status.open_position.unrealized_pnl,
-            openedAt: new Date(),
-          },
-        ]);
-      } else {
-        setPositionsState([]);
+      
+      // Only update if status actually changed (memoization)
+      if (statusChanged(status, previousStatusRef.current)) {
+        previousStatusRef.current = status;
+        setSessionStats(status);
+        setIsPausedState(status.status === "paused");
+        setRunningTimeState(formatRunningTime(status.elapsed_seconds));
+        setNextDecisionState(status.next_candle_eta ?? null);
+        if (status.open_position) {
+          setPositionsState([
+            {
+              type: status.open_position.type,
+              entryPrice: status.open_position.entry_price,
+              size: 0,
+              leverage: 1,
+              stopLoss: 0,
+              takeProfit: 0,
+              unrealizedPnL: status.open_position.unrealized_pnl,
+              openedAt: new Date(),
+            },
+          ]);
+        } else {
+          setPositionsState([]);
+        }
       }
     } catch (err) {
       setForwardError(err instanceof Error ? err.message : "Failed to load forward session");
     }
-  }, [getForwardStatus, sessionId]);
+  }, [getForwardStatus, sessionId, statusChanged, formatRunningTime]);
 
   // Get the actual asset from session stats or fallback to config
   const displayAsset = useMemo(() => {
@@ -151,12 +174,32 @@ export function LiveSessionView({ sessionId }: LiveSessionViewProps) {
     void fetchSessionStatus();
   }, [fetchSessionStatus]);
 
+  // Debounce state updates to prevent "bomb" effect
+  const updateQueueRef = useRef<Array<() => void>>([]);
+  const updateTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  
+  const flushUpdates = useCallback(() => {
+    if (updateQueueRef.current.length === 0) return;
+    const updates = [...updateQueueRef.current];
+    updateQueueRef.current = [];
+    updates.forEach(update => update());
+  }, []);
+
+  const scheduleUpdate = useCallback((updateFn: () => void) => {
+    updateQueueRef.current.push(updateFn);
+    if (updateTimeoutRef.current) {
+      clearTimeout(updateTimeoutRef.current);
+    }
+    // Batch updates every 50ms to prevent "bomb" effect
+    updateTimeoutRef.current = setTimeout(flushUpdates, 50);
+  }, [flushUpdates]);
+
   const handleForwardEvent = useCallback(
     (event: WebSocketEvent) => {
       switch (event.type) {
         case "session_initialized": {
           console.log("Session initialized:", event.data);
-          // Session is ready, update status
+          // Session is ready, update status immediately (not batched)
           if (event.data) {
             setSessionStats((prev) => ({
               ...(prev ?? {
@@ -193,24 +236,24 @@ export function LiveSessionView({ sessionId }: LiveSessionViewProps) {
               close: event.data.close,
               volume: event.data.volume,
             };
-            console.log("Adding candle to chart:", candle, "Current candles count:", candlesState.length);
-            setCandlesState((prev) => {
-              // Check if candle with same timestamp already exists (avoid duplicates)
-              const existingIndex = prev.findIndex(c => c.time === candle.time);
-              if (existingIndex >= 0) {
-                // Update existing candle instead of adding duplicate
-                const updated = [...prev];
-                updated[existingIndex] = candle;
-                console.log("Updated existing candle at index", existingIndex);
-                return updated;
-              }
-              // Add new candle
-              const updated = [...prev, candle];
-              // Sort by time to ensure ascending order
-              updated.sort((a, b) => a.time - b.time);
-              console.log("Added new candle, total candles:", updated.length);
-              // Keep last 500 candles (not just 100) to show more history
-              return updated.slice(-500);
+            // Batch candle updates to prevent "bomb" effect
+            scheduleUpdate(() => {
+              setCandlesState((prev) => {
+                // Check if candle with same timestamp already exists (avoid duplicates)
+                const existingIndex = prev.findIndex(c => c.time === candle.time);
+                if (existingIndex >= 0) {
+                  // Update existing candle instead of adding duplicate
+                  const updated = [...prev];
+                  updated[existingIndex] = candle;
+                  return updated;
+                }
+                // Add new candle
+                const updated = [...prev, candle];
+                // Sort by time to ensure ascending order
+                updated.sort((a, b) => a.time - b.time);
+                // Keep last 500 candles (not just 100) to show more history
+                return updated.slice(-500);
+              });
             });
           } catch (err) {
             console.error("Error processing candle event:", err, event.data);
@@ -297,18 +340,22 @@ export function LiveSessionView({ sessionId }: LiveSessionViewProps) {
           );
           if (event.data.current_pnl_pct !== undefined) {
             showAnalyzing({
-              message: NARRATOR_MESSAGES.forwardAnalyzing,
+              message: "Monitoring real-time market conditions...",
               phase: "analyzing",
               currentAsset: displayAsset,
+              sessionId: sessionId,
+              sessionType: "forward",
             });
           }
           break;
         }
         case "ai_thinking":
           showAnalyzing({
-            message: event.data?.text ?? NARRATOR_MESSAGES.forwardAnalyzing,
+            message: event.data?.text ?? "Analyzing market structure...",
             phase: "analyzing",
             currentAsset: displayAsset,
+            sessionId: sessionId,
+            sessionType: "forward",
           });
           break;
         case "ai_decision": {
@@ -317,23 +364,24 @@ export function LiveSessionView({ sessionId }: LiveSessionViewProps) {
           const thoughtId = `thought-${candleNumber}`;
           const reasoning = event.data?.reasoning ?? "AI decision";
           
-          // Check if this thought already exists (prevent duplicates)
-          setThoughtsState((prev) => {
-            const exists = prev.some(t => t.id === thoughtId);
-            if (exists) {
-              console.log(`Skipping duplicate AI thought for candle ${candleNumber}`);
-              return prev;
-            }
-            
-          const thought: AIThoughtType = {
-              id: thoughtId,
-            timestamp: new Date(),
-              candle: candleNumber,
-            type: event.data?.action ? "execution" : "decision",
-              content: reasoning,
-            action: event.data?.action?.toLowerCase() as AIThoughtType["action"],
-          };
-            return [thought, ...prev].slice(0, 50);
+          // Batch thought updates
+          scheduleUpdate(() => {
+            setThoughtsState((prev) => {
+              const exists = prev.some(t => t.id === thoughtId);
+              if (exists) {
+                return prev;
+              }
+              
+              const thought: AIThoughtType = {
+                id: thoughtId,
+                timestamp: new Date(),
+                candle: candleNumber,
+                type: event.data?.action ? "execution" : "decision",
+                content: reasoning,
+                action: event.data?.action?.toLowerCase() as AIThoughtType["action"],
+              };
+              return [thought, ...prev].slice(0, 50);
+            });
           });
           
           if (event.data?.action && event.data?.action !== "HOLD") {
@@ -361,7 +409,9 @@ export function LiveSessionView({ sessionId }: LiveSessionViewProps) {
             unrealizedPnL: 0,
             openedAt: new Date(event.data.entry_time ?? Date.now()),
           };
-          setPositionsState((prev) => [position, ...prev]);
+          scheduleUpdate(() => {
+            setPositionsState((prev) => [position, ...prev]);
+          });
           showTradeExecuted({
             direction: position.type,
             asset: displayAsset,
@@ -391,10 +441,12 @@ export function LiveSessionView({ sessionId }: LiveSessionViewProps) {
             stopLoss: event.data.stop_loss ?? 0,
             takeProfit: event.data.take_profit ?? 0,
           };
-          setTradesState((prev) => [trade, ...prev].slice(0, 100));
-          setPositionsState((prev) =>
-            prev.filter((pos) => pos.entryPrice !== trade.entryPrice)
-          );
+          scheduleUpdate(() => {
+            setTradesState((prev) => [trade, ...prev].slice(0, 100));
+            setPositionsState((prev) =>
+              prev.filter((pos) => pos.entryPrice !== trade.entryPrice)
+            );
+          });
           break;
         }
         case "countdown_update": {
@@ -424,17 +476,46 @@ export function LiveSessionView({ sessionId }: LiveSessionViewProps) {
           break;
         case "session_completed":
           setIsPausedState(false);
+          setIsStopped(true);
+          setIsStopping(false);
           setRunningTimeState("Completed");
+          // Show stopped message in dynamic island
+          narrate("Forward test stopped. Results saved.", "result");
+          // Disconnect websocket
+          if (sessionId) {
+            websocketManager.disconnect("forward", sessionId);
+          }
+          setIsConnectedState(false);
+          // Navigate to result if available
+          if (event.data?.result_id) {
+            setTimeout(() => {
+              router.push(`/dashboard/results/${event.data.result_id}`);
+            }, 3000); // Increased to 3s to show stopped state
+          }
           break;
         case "error":
           setForwardError(event.data?.message ?? "Session error");
           break;
       }
     },
-    [displayAsset, forwardConfig?.capital, formatRunningTime, sessionId]
+    [displayAsset, forwardConfig?.capital, formatRunningTime, sessionId, scheduleUpdate]
   );
 
-  const { isConnected: wsConnected, error: wsError } = useForwardWebSocket(sessionId, handleForwardEvent);
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (updateTimeoutRef.current) {
+        clearTimeout(updateTimeoutRef.current);
+      }
+      flushUpdates();
+      // Disconnect websocket on unmount if session is stopped
+      if (isStopped && sessionId) {
+        websocketManager.disconnect("forward", sessionId);
+      }
+    };
+  }, [flushUpdates, isStopped, sessionId]);
+
+  const { isConnected: wsConnected, error: wsError, reconnect } = useForwardWebSocket(sessionId, handleForwardEvent);
 
   useEffect(() => {
     setIsConnectedState(wsConnected);
@@ -449,47 +530,7 @@ export function LiveSessionView({ sessionId }: LiveSessionViewProps) {
     }
   }, [wsError]);
 
-  const handlePauseToggle = useCallback(async () => {
-    if (!sessionId) return;
-    setPauseError(null);
-    try {
-      if (isPausedState) {
-        await post(`/api/arena/forward/${sessionId}/resume`);
-        setIsPausedState(false);
-        setSessionStats((prev) =>
-          prev ? { ...prev, status: "running" } : prev
-        );
-      } else {
-        await post(`/api/arena/forward/${sessionId}/pause`);
-        setIsPausedState(true);
-        setSessionStats((prev) =>
-          prev ? { ...prev, status: "paused" } : prev
-        );
-      }
-    } catch (err) {
-      setPauseError(err instanceof Error ? err.message : "Failed to toggle session");
-    }
-  }, [isPausedState, post, sessionId]);
-
-  const handleStop = useCallback(async () => {
-    if (!sessionId) return;
-    setStopError(null);
-    try {
-      const response = await post(`/api/arena/forward/${sessionId}/stop`, {
-        close_position: true,
-      });
-      const resultId = (response as { result_id?: string })?.result_id;
-      if (resultId) {
-        router.push(`/dashboard/results/${resultId}`);
-      } else {
-        router.push("/dashboard/results");
-      }
-    } catch (err) {
-      setStopError(err instanceof Error ? err.message : "Failed to stop session");
-    }
-  }, [post, router, sessionId]);
-  
-  // Dynamic Island controls
+  // Dynamic Island controls - moved before handleStop to avoid hoisting issues
   const {
     showAnalyzing,
     showIdle,
@@ -500,6 +541,49 @@ export function LiveSessionView({ sessionId }: LiveSessionViewProps) {
     celebrate,
     hide,
   } = useDynamicIslandStore();
+
+  const handleStop = useCallback(async () => {
+    if (!sessionId || isStopping || isStopped) return;
+    setStopError(null);
+    setIsStopping(true);
+    
+    // Show stopping message in dynamic island immediately
+    narrate("Stopping forward test and closing positions...", "action");
+    
+    try {
+      const response = await post(`/api/arena/forward/${sessionId}/stop`, {
+        close_position: true,
+      });
+      const resultId = (response as { result_id?: string })?.result_id;
+      
+      // Update UI to show stopped state
+      setIsStopped(true);
+      setRunningTimeState("Stopped");
+      
+      // Disconnect websocket after stopping
+      if (sessionId) {
+        websocketManager.disconnect("forward", sessionId);
+      }
+      
+      // Show success message
+      narrate("Forward test stopped. Saving results...", "result");
+      
+      // Navigate after a short delay to show stopped state
+      if (resultId) {
+        setTimeout(() => {
+          router.push(`/dashboard/results/${resultId}`);
+        }, 2000);
+      } else {
+        setTimeout(() => {
+          router.push("/dashboard/results");
+        }, 2000);
+      }
+    } catch (err) {
+      setIsStopping(false);
+      setStopError(err instanceof Error ? err.message : "Failed to stop session");
+      narrate("Failed to stop session. Please try again.", "result");
+    }
+  }, [post, router, sessionId, isStopping, isStopped, narrate]);
   
   // Find the selected agent
   const agent = useMemo(() => {
@@ -570,7 +654,7 @@ export function LiveSessionView({ sessionId }: LiveSessionViewProps) {
   // Show analyzing when running, idle when paused
   useEffect(() => {
     if (isPausedState) {
-      narrate(NARRATOR_MESSAGES.forwardPaused, "info");
+      narrate("Session paused - positions held", "info");
     } else if (!isPausedState && isConnectedState) {
       // Check if we're currently showing a trade or alpha (priority states)
       const islandState = useDynamicIslandStore.getState();
@@ -579,9 +663,11 @@ export function LiveSessionView({ sessionId }: LiveSessionViewProps) {
       // Only show analyzing if not in a priority state
       if (!isPriorityMode) {
       showAnalyzing({
-        message: NARRATOR_MESSAGES.forwardAnalyzing,
+        message: "Monitoring real-time market conditions...",
         phase: "analyzing",
         currentAsset: displayAsset,
+        sessionId: sessionId,
+        sessionType: "forward",
       });
       }
     }
@@ -589,27 +675,13 @@ export function LiveSessionView({ sessionId }: LiveSessionViewProps) {
 
   // Initial mount - show forward test start
   useEffect(() => {
-    narrate(NARRATOR_MESSAGES.forwardStart, "info");
+    narrate("Connecting to live market feed...", "info");
     return () => {
       hide();
     };
   }, [narrate, hide]);
 
-  // Periodic narrator messages (every 30 seconds while running)
-  useEffect(() => {
-    if (isPausedState || !isConnectedState) return;
-
-    const interval = setInterval(() => {
-      const now = Date.now();
-      if (now - lastNarratorTimeRef.current > 25000) {
-        lastNarratorTimeRef.current = now;
-        const message = getRandomNarratorMessage();
-        narrate(message.text, message.type);
-      }
-    }, 30000);
-
-    return () => clearInterval(interval);
-  }, [isPausedState, isConnectedState, narrate]);
+  // Periodic narrator messages removed - use real AI thinking events instead
 
   // Track PnL for potential future use (celebration removed mid-test)
   useEffect(() => {
@@ -621,21 +693,7 @@ export function LiveSessionView({ sessionId }: LiveSessionViewProps) {
   const lastTradeCountRef = useRef(0);
   const hasShownAlphaRef = useRef(false);
   
-  // Show alpha detected occasionally (once per session, after some time)
-  useEffect(() => {
-    if (isPausedState || !isConnectedState || hasShownAlphaRef.current) return;
-    
-    // Show alpha after 2 minutes if PnL is positive
-    const timeout = setTimeout(() => {
-      if (calculatedPnl > 0 && !hasShownAlphaRef.current) {
-        hasShownAlphaRef.current = true;
-        const direction = Math.random() > 0.5 ? "long" : "short";
-        showAlphaDetected(createMockAlphaData(direction, displayAsset));
-      }
-    }, 120000); // 2 minutes
-    
-    return () => clearTimeout(timeout);
-  }, [isPausedState, isConnectedState, calculatedPnl, showAlphaDetected]);
+  // Alpha detection removed - will be triggered by real AI decision events with high confidence
   
   // Show trade executed when new trades appear
   useEffect(() => {
@@ -794,34 +852,26 @@ export function LiveSessionView({ sessionId }: LiveSessionViewProps) {
           {isPausedState && (
             <Badge variant="secondary" className="text-[10px] h-5">PAUSED</Badge>
           )}
+          {isStopping && (
+            <Badge variant="secondary" className="text-[10px] h-5">STOPPING...</Badge>
+          )}
+          {isStopped && (
+            <Badge variant="secondary" className="text-[10px] h-5">STOPPED</Badge>
+          )}
         </div>
 
         {/* Right: Controls */}
         <div className="flex items-center gap-1.5 sm:gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handlePauseToggle}
-            className={cn(
-              "gap-1 h-7 px-2 text-xs",
-              isPausedState && "border-[hsl(var(--accent-amber)/0.5)] text-[hsl(var(--accent-amber))]"
-            )}
-          >
-            {isPausedState ? <Play className="h-3 w-3" /> : <Pause className="h-3 w-3" />}
-            <span className="hidden xs:inline">{isPausedState ? "Resume" : "Pause"}</span>
-          </Button>
-
           <AlertDialog>
             <AlertDialogTrigger asChild>
               <Button 
-                variant={isPausedState ? "destructive" : "outline"} 
+                variant="destructive" 
                 size="sm" 
-                className={cn(
-                  "h-7 px-2",
-                  !isPausedState && "border-destructive/50 text-destructive hover:bg-destructive/10"
-                )}
+                className="h-7 px-2 gap-1"
+                disabled={isStopping || isStopped}
               >
                 <Square className="h-3 w-3" />
+                <span className="hidden xs:inline">{isStopping ? "Stopping..." : isStopped ? "Stopped" : "Stop"}</span>
               </Button>
             </AlertDialogTrigger>
             <AlertDialogContent>
@@ -846,14 +896,16 @@ export function LiveSessionView({ sessionId }: LiveSessionViewProps) {
       {/* Running Time / Status */}
       <div className="flex items-center gap-2 text-[10px] sm:text-xs text-muted-foreground">
         <Clock className="h-3 w-3" />
-        <span>Running for {activeRunningTime}</span>
-        <Separator orientation="vertical" className="h-3" />
-        {nextAIDecisionState !== null ? (
-          <span className="font-medium text-foreground">
-            Next AI decision in {nextAIDecisionState}m
-          </span>
-        ) : (
-          <span>Next candle in {activeNextDecision ?? 0}m</span>
+        <span>
+          {isStopped ? "Stopped" : isStopping ? "Stopping..." : `Running for ${activeRunningTime}`}
+        </span>
+        {nextAIDecisionState !== null && (
+          <>
+            <Separator orientation="vertical" className="h-3" />
+            <span className="font-medium text-foreground">
+              Next AI decision in {nextAIDecisionState}m
+            </span>
+          </>
         )}
       </div>
 
@@ -873,8 +925,6 @@ export function LiveSessionView({ sessionId }: LiveSessionViewProps) {
                   <p className="text-xs text-muted-foreground/70">
                     {activeNextAIDecision !== null
                       ? `Next AI decision in ${activeNextAIDecision} minutes`
-                      : activeNextDecision !== null
-                      ? `Next candle in ${activeNextDecision} minutes`
                       : "Session initializing"}
                   </p>
                 </div>

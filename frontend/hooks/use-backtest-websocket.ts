@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { useAuth } from "@clerk/nextjs";
+import { websocketManager, type WebSocketEvent as ManagerWebSocketEvent } from "@/lib/websocket-manager";
 
 const WS_BASE_URL = process.env.NEXT_PUBLIC_WS_URL || "ws://127.0.0.1:5000";
 
@@ -59,302 +60,255 @@ export function useBacktestWebSocket(
   const [isConnected, setIsConnected] = useState(false);
   const [sessionState, setSessionState] = useState<BacktestSessionState | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const wsRef = useRef<WebSocket | null>(null);
-  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const reconnectAttemptsRef = useRef(0);
-  const maxReconnectAttempts = 5;
+  const unsubscribeRef = useRef<(() => void) | null>(null);
   const onEventRef = useRef(onEvent);
-  const isConnectingRef = useRef(false);
+  const processedMessagesRef = useRef<Set<string>>(new Set());
 
   // Keep the ref updated with the latest callback without triggering reconnections
   useEffect(() => {
     onEventRef.current = onEvent;
   }, [onEvent]);
-
-  const sessionIdRef = useRef(sessionId);
   
-  // Keep sessionId ref updated
+  // Clear processed messages when session changes
   useEffect(() => {
-    sessionIdRef.current = sessionId;
+    processedMessagesRef.current.clear();
   }, [sessionId]);
 
-  const connect = useCallback(async () => {
-    const currentSessionId = sessionIdRef.current;
-    if (!currentSessionId) return;
-
-    // Prevent multiple simultaneous connection attempts
-    if (isConnectingRef.current) {
-      console.log("Connection already in progress, skipping...");
+  // Handle WebSocket events with state management
+  const handleWebSocketEvent = useCallback((message: ManagerWebSocketEvent) => {
+    // Create a unique key for deduplication based on event type and identifying data
+    let messageKey: string;
+    if (message.type === "ai_decision" || message.type === "candle") {
+      // Use candle_index for these events
+      const candleIndex = message.data?.candle_index ?? message.data?.candle_number ?? -1;
+      messageKey = `${message.type}-${candleIndex}-${message.timestamp || Date.now()}`;
+    } else if (message.type === "stats_update") {
+      // Use current_candle for stats updates
+      const candleIndex = message.data?.current_candle ?? -1;
+      messageKey = `${message.type}-${candleIndex}-${message.timestamp || Date.now()}`;
+    } else {
+      // For other events, use type + timestamp
+      messageKey = `${message.type}-${message.timestamp || Date.now()}`;
+    }
+    
+    // Skip if we've already processed this message
+    if (processedMessagesRef.current.has(messageKey)) {
+      console.debug(`Skipping duplicate message: ${messageKey}`);
       return;
     }
-
-    // Close existing connection if any
-    if (wsRef.current) {
-      const ws = wsRef.current;
-      ws.onclose = null; // Prevent reconnect loop
-      ws.onerror = null;
-      ws.close();
-      wsRef.current = null;
+    
+    // Mark as processed
+    processedMessagesRef.current.add(messageKey);
+    
+    // Clean up old messages (keep only last 1000 to prevent memory leak)
+    if (processedMessagesRef.current.size > 1000) {
+      const entries = Array.from(processedMessagesRef.current);
+      processedMessagesRef.current = new Set(entries.slice(-500));
     }
+    
+    // Handle different event types
+    switch (message.type) {
+      case "session_initialized": {
+        // Session is ready. Backend may send either a flat payload
+        // with `total_candles` or a nested `config.total_candles`.
+        const totalCandles =
+          message.data.total_candles ??
+          message.data.config?.total_candles ??
+          0;
 
-    // Clear any pending reconnect timeout
-    if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current);
-      reconnectTimeoutRef.current = null;
-    }
-
-    isConnectingRef.current = true;
-
-    try {
-      const token = await getToken();
-      if (!token) {
-        setError("Authentication required");
-        isConnectingRef.current = false;
-        return;
+        setSessionState((prev) => {
+          const base = prev ?? createInitialSessionState();
+          return {
+            ...base,
+            status: "running",
+            totalCandles,
+          };
+        });
+        break;
       }
 
-      // Build WebSocket URL with token
-      const wsUrl = `${WS_BASE_URL}/ws/backtest/${currentSessionId}?token=${encodeURIComponent(token)}`;
-      
-      const ws = new WebSocket(wsUrl);
-      wsRef.current = ws;
+      case "candle":
+        // New candle processed
+        setSessionState((prev) => {
+          const indexFromMessage =
+            message.data.candle_index ??
+            message.data.candle_number ??
+            (prev ? prev.currentCandle + 1 : 0);
 
-      ws.onopen = () => {
-        setIsConnected(true);
-        setError(null);
-        reconnectAttemptsRef.current = 0;
-        isConnectingRef.current = false;
-        console.log(`WebSocket connected for session ${currentSessionId}`);
-      };
+          const base = prev ?? createInitialSessionState();
+          const totalCandles =
+            base.totalCandles ||
+            message.data.total_candles ||
+            0;
 
-      ws.onmessage = (event) => {
-        try {
-          const message: WebSocketEvent = JSON.parse(event.data);
-          
-          // Handle different event types
-          switch (message.type) {
-            case "session_initialized": {
-              // Session is ready. Backend may send either a flat payload
-              // with `total_candles` or a nested `config.total_candles`.
-              const totalCandles =
-                message.data.total_candles ??
-                message.data.config?.total_candles ??
-                0;
+          const progressPct =
+            totalCandles > 0
+              ? (indexFromMessage / totalCandles) * 100
+              : 0;
 
-              setSessionState((prev) => {
-                const base = prev ?? createInitialSessionState();
-                return {
-                  ...base,
-                  status: "running",
-                  totalCandles,
-                };
-              });
-              break;
-            }
+          return {
+            ...base,
+            currentCandle: indexFromMessage,
+            totalCandles,
+            progressPct,
+          };
+        });
+        break;
 
-            case "candle":
-              // New candle processed
-              setSessionState((prev) => {
-                const indexFromMessage =
-                  message.data.candle_index ??
-                  message.data.candle_number ??
-                  (prev ? prev.currentCandle + 1 : 0);
-
-                const base = prev ?? createInitialSessionState();
-                const totalCandles =
-                  base.totalCandles ||
-                  message.data.total_candles ||
-                  0;
-
-                const progressPct =
-                  totalCandles > 0
-                    ? (indexFromMessage / totalCandles) * 100
-                    : 0;
-
-                return {
-                  ...base,
-                  currentCandle: indexFromMessage,
-                  totalCandles,
-                  progressPct,
-                };
-              });
-              break;
-
-            case "stats_update":
-              // Stats updated
-              if (message.data) {
-                setSessionState((prev) => {
-                  if (!prev) return prev;
-                  return {
-                    ...prev,
-                    currentEquity: message.data.current_equity ?? prev.currentEquity,
-                    currentPnlPct: message.data.equity_change_pct ?? prev.currentPnlPct,
-                    tradesCount: message.data.total_trades ?? prev.tradesCount,
-                    winRate: message.data.win_rate ?? prev.winRate,
-                  };
-                });
-              }
-              break;
-
-            case "position_opened":
-              // Position opened
-              if (message.data) {
-                setSessionState((prev) => {
-                  if (!prev) return prev;
-                  return {
-                    ...prev,
-                    openPosition: {
-                      type: message.data.type?.toLowerCase() === "short" ? "short" : "long",
-                      entry_price: message.data.entry_price || 0,
-                      unrealized_pnl: message.data.unrealized_pnl || 0,
-                    },
-                  };
-                });
-              }
-              break;
-
-            case "position_closed":
-              // Position closed
-              setSessionState((prev) => {
-                if (!prev) return prev;
-                return {
-                  ...prev,
-                  openPosition: null,
-                };
-              });
-              break;
-
-            case "session_completed":
-              // Session finished
-              setSessionState((prev) => {
-                if (!prev) return prev;
-                return {
-                  ...prev,
-                  status: "completed",
-                  progressPct: 100,
-                };
-              });
-              break;
-
-            case "session_paused":
-              setSessionState((prev) => {
-                if (!prev) return prev;
-                return { ...prev, status: "paused" };
-              });
-              break;
-
-            case "session_resumed":
-              setSessionState((prev) => {
-                if (!prev) return prev;
-                return { ...prev, status: "running" };
-              });
-              break;
-
-            case "error":
-              setError(message.data.message || "WebSocket error occurred");
-              break;
-
-            case "heartbeat":
-              // Just acknowledge, no state change needed
-              break;
-          }
-
-          // Call custom event handler if provided (use ref to get latest callback)
-          if (onEventRef.current) {
-            onEventRef.current(message);
-          }
-        } catch (err) {
-          console.error("Error parsing WebSocket message:", err);
+      case "stats_update":
+        // Stats updated
+        if (message.data) {
+          setSessionState((prev) => {
+            if (!prev) return prev;
+            return {
+              ...prev,
+              currentEquity: message.data.current_equity ?? prev.currentEquity,
+              currentPnlPct: message.data.equity_change_pct ?? prev.currentPnlPct,
+              tradesCount: message.data.total_trades ?? prev.tradesCount,
+              winRate: message.data.win_rate ?? prev.winRate,
+            };
+          });
         }
-      };
+        break;
 
-      ws.onerror = (err) => {
-        console.error("WebSocket error:", err);
-        setError("WebSocket connection error");
-        setIsConnected(false);
-        isConnectingRef.current = false;
-      };
-
-      ws.onclose = (event) => {
-        setIsConnected(false);
-        isConnectingRef.current = false;
-        console.log(`WebSocket closed for session ${currentSessionId}`, event.code, event.reason);
-
-        // Only attempt to reconnect if not a normal closure and sessionId hasn't changed
-        if (
-          event.code !== 1000 && 
-          event.code !== 1001 && 
-          reconnectAttemptsRef.current < maxReconnectAttempts &&
-          sessionIdRef.current === currentSessionId // Only reconnect if sessionId hasn't changed
-        ) {
-          reconnectAttemptsRef.current += 1;
-          const delay = Math.min(1000 * Math.pow(2, reconnectAttemptsRef.current), 30000);
-          console.log(`Reconnecting in ${delay}ms (attempt ${reconnectAttemptsRef.current}/${maxReconnectAttempts})`);
-          
-          reconnectTimeoutRef.current = setTimeout(() => {
-            connect();
-          }, delay);
-        } else if (reconnectAttemptsRef.current >= maxReconnectAttempts) {
-          setError("Failed to reconnect after multiple attempts");
+      case "position_opened":
+        // Position opened
+        if (message.data) {
+          setSessionState((prev) => {
+            if (!prev) return prev;
+            return {
+              ...prev,
+              openPosition: {
+                type: message.data.type?.toLowerCase() === "short" ? "short" : "long",
+                entry_price: message.data.entry_price || 0,
+                unrealized_pnl: message.data.unrealized_pnl || 0,
+              },
+            };
+          });
         }
-      };
-    } catch (err) {
-      console.error("Error connecting WebSocket:", err);
-      setError(err instanceof Error ? err.message : "Failed to connect");
-      setIsConnected(false);
-      isConnectingRef.current = false;
+        break;
+
+      case "position_closed":
+        // Position closed
+        setSessionState((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            openPosition: null,
+          };
+        });
+        break;
+
+      case "session_completed":
+        // Session finished
+        setSessionState((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            status: "completed",
+            progressPct: 100,
+          };
+        });
+        break;
+
+      case "session_paused":
+        setSessionState((prev) => {
+          if (!prev) return prev;
+          return { ...prev, status: "paused" };
+        });
+        break;
+
+      case "session_resumed":
+        setSessionState((prev) => {
+          if (!prev) return prev;
+          return { ...prev, status: "running" };
+        });
+        break;
+
+      case "error":
+        setError(message.data.message || "WebSocket error occurred");
+        break;
+
+      case "heartbeat":
+        // Just acknowledge, no state change needed
+        break;
     }
-  }, [getToken]);
+
+    // Call custom event handler if provided (use ref to get latest callback)
+    if (onEventRef.current) {
+      onEventRef.current(message);
+    }
+  }, []);
 
   const reconnect = useCallback(() => {
-    if (wsRef.current) {
-      wsRef.current.close();
+    if (sessionId) {
+      // Disconnect and let the effect reconnect
+      if (unsubscribeRef.current) {
+        unsubscribeRef.current();
+        unsubscribeRef.current = null;
+      }
+      websocketManager.disconnect("backtest", sessionId);
+      // Trigger reconnection by updating state
+      setIsConnected(false);
     }
-    reconnectAttemptsRef.current = 0;
-    connect();
-  }, [connect]);
+  }, [sessionId]);
 
   useEffect(() => {
     if (!sessionId) {
       // Clean up if sessionId is cleared
-      if (wsRef.current) {
-        const ws = wsRef.current;
-        ws.onclose = null;
-        ws.onerror = null;
-        ws.close();
-        wsRef.current = null;
-      }
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-        reconnectTimeoutRef.current = null;
+      if (unsubscribeRef.current) {
+        unsubscribeRef.current();
+        unsubscribeRef.current = null;
       }
       setIsConnected(false);
-      isConnectingRef.current = false;
-      reconnectAttemptsRef.current = 0;
+      setSessionState(null);
+      setError(null);
       return;
     }
 
-    // Connect when sessionId is available
-      connect();
+    // Subscribe to shared WebSocket connection
+    let mounted = true;
+    let connectionCheckInterval: NodeJS.Timeout | null = null;
+    
+    websocketManager
+      .subscribe("backtest", sessionId, handleWebSocketEvent, getToken)
+      .then((unsubscribe) => {
+        if (mounted) {
+          unsubscribeRef.current = unsubscribe;
+          // Check connection state
+          const state = websocketManager.getConnectionState("backtest", sessionId);
+          if (state) {
+            setIsConnected(state.isConnected);
+          }
+          
+          // Poll connection state (since we can't directly listen to it)
+          connectionCheckInterval = setInterval(() => {
+            const currentState = websocketManager.getConnectionState("backtest", sessionId);
+            if (currentState && mounted) {
+              setIsConnected(currentState.isConnected);
+            }
+          }, 1000);
+        }
+      })
+      .catch((err) => {
+        if (mounted) {
+          console.error("Error subscribing to WebSocket:", err);
+          setError(err instanceof Error ? err.message : "Failed to connect");
+          setIsConnected(false);
+        }
+      });
 
     return () => {
-      // Cleanup on unmount or sessionId change
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-        reconnectTimeoutRef.current = null;
+      mounted = false;
+      if (connectionCheckInterval) {
+        clearInterval(connectionCheckInterval);
       }
-      if (wsRef.current) {
-        const ws = wsRef.current;
-        ws.onclose = null; // Prevent reconnect on cleanup
-        ws.onerror = null;
-        ws.close();
-        wsRef.current = null;
+      if (unsubscribeRef.current) {
+        unsubscribeRef.current();
+        unsubscribeRef.current = null;
       }
-      isConnectingRef.current = false;
-      reconnectAttemptsRef.current = 0;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId]); // Only depend on sessionId, connect is stable
+  }, [sessionId, handleWebSocketEvent, getToken]);
 
   return {
     isConnected,

@@ -20,12 +20,15 @@ import { cn } from "@/lib/utils";
 import { useAgentsStore, useArenaStore } from "@/lib/stores";
 import { useArenaCatalogs } from "@/hooks/use-arena-catalogs";
 import { useArenaApi } from "@/hooks/use-arena-api";
+import { useAgents } from "@/hooks/use-agents";
 
 export function BacktestConfig() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const preselectedAgent = searchParams.get("agent");
   const { agents } = useAgentsStore();
+  // Ensure agents are loaded when component mounts
+  useAgents();
   const { setBacktestConfig, seedSessionData } = useArenaStore();
   const { assets, timeframes, datePresets, playbackSpeeds, isLoading, error: catalogError } =
     useArenaCatalogs();

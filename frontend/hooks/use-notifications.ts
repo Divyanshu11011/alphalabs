@@ -1,7 +1,7 @@
 "use client";
 
 import { useApiClient } from "@/lib/api";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import type { NotificationItem } from "@/types";
 
 interface NotificationListResponse {
@@ -38,6 +38,36 @@ const mapNotification = (item: NotificationListResponse["notifications"][number]
   createdAt: new Date(item.created_at),
 });
 
+// Deep equality check for notifications array
+function notificationsEqual(a: NotificationItem[], b: NotificationItem[]): boolean {
+  if (a.length !== b.length) return false;
+  
+  const aMap = new Map(a.map(n => [n.id, n]));
+  const bMap = new Map(b.map(n => [n.id, n]));
+  
+  for (const notification of a) {
+    const other = bMap.get(notification.id);
+    if (!other) return false;
+    
+    // Compare all relevant fields
+    if (
+      notification.type !== other.type ||
+      notification.category !== other.category ||
+      notification.title !== other.title ||
+      notification.message !== other.message ||
+      notification.actionUrl !== other.actionUrl ||
+      notification.sessionId !== other.sessionId ||
+      notification.resultId !== other.resultId ||
+      notification.isRead !== other.isRead ||
+      notification.createdAt.getTime() !== other.createdAt.getTime()
+    ) {
+      return false;
+    }
+  }
+  
+  return true;
+}
+
 export function useNotifications() {
   const { get, post } = useApiClient();
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
@@ -45,15 +75,33 @@ export function useNotifications() {
   const [unreadCount, setUnreadCount] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const previousNotificationsRef = useRef<NotificationItem[]>([]);
+  const previousTotalRef = useRef(0);
+  const previousUnreadCountRef = useRef(0);
 
   const fetchNotifications = useCallback(async () => {
     setIsLoading(true);
     setError(null);
     try {
       const data = await get<NotificationListResponse>("/api/notifications?limit=20");
-      setNotifications(data.notifications.map(mapNotification));
-      setTotal(data.total);
-      setUnreadCount(data.unread_count);
+      const newNotifications = data.notifications.map(mapNotification);
+      
+      // Only update if data actually changed (memoization)
+      if (!notificationsEqual(newNotifications, previousNotificationsRef.current)) {
+        previousNotificationsRef.current = newNotifications;
+        setNotifications(newNotifications);
+      }
+      
+      // Only update counts if they changed
+      if (data.total !== previousTotalRef.current) {
+        previousTotalRef.current = data.total;
+        setTotal(data.total);
+      }
+      
+      if (data.unread_count !== previousUnreadCountRef.current) {
+        previousUnreadCountRef.current = data.unread_count;
+        setUnreadCount(data.unread_count);
+      }
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "Failed to load notifications";

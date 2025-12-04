@@ -21,16 +21,8 @@ import { cn } from "@/lib/utils";
 import { useAgentsStore, useArenaStore } from "@/lib/stores";
 import { useApiClient } from "@/lib/api";
 import { useArenaApi } from "@/hooks/use-arena-api";
+import { useAgents } from "@/hooks/use-agents";
 import type { Asset, Timeframe } from "@/types/arena";
-
-// Mock active sessions
-const mockActiveSessions: Array<{
-  id: string;
-  agentName: string;
-  asset: string;
-  duration: string;
-  pnl: number;
-}> = [];
 
 export function ForwardTestConfig() {
   const router = useRouter();
@@ -39,6 +31,8 @@ export function ForwardTestConfig() {
   
   // Get agents from store
   const { agents } = useAgentsStore();
+  // Ensure agents are loaded when component mounts
+  useAgents();
   const { setForwardConfig } = useArenaStore();
   const { get } = useApiClient();
   const { startForwardTest } = useArenaApi();

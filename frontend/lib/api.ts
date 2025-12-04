@@ -26,10 +26,16 @@ export async function apiRequest<T>(
 ): Promise<T> {
     const { method = "GET", body, headers = {} } = options;
 
+    // Get frontend base URL (for certificate generation and other features)
+    const frontendUrl = typeof window !== "undefined" 
+        ? `${window.location.protocol}//${window.location.host}`
+        : process.env.NEXT_PUBLIC_FRONTEND_URL || "http://localhost:3000";
+
     const config: RequestInit = {
         method,
         headers: {
             "Content-Type": "application/json",
+            "X-Frontend-URL": frontendUrl,  // Explicitly send frontend URL
             ...headers,
         },
     };

@@ -117,8 +117,15 @@ const mapPreviewCandles = (preview?: CandleDto[] | null): CandleData[] | undefin
   }));
 };
 
+interface CleanupResponse {
+  message: string;
+  deleted_sessions: number;
+  stopped_in_memory: number;
+  session_type: string;
+}
+
 export function useArenaApi() {
-  const { post, get } = useApiClient();
+  const { post, get, del } = useApiClient();
 
   const startBacktest = useCallback(
     async (payload: BacktestStartPayload): Promise<BacktestSession> => {
@@ -157,11 +164,22 @@ export function useArenaApi() {
     [get]
   );
 
+  const cleanupActiveSessions = useCallback(
+    async (sessionType?: "backtest" | "forward"): Promise<CleanupResponse> => {
+      const endpoint = sessionType 
+        ? `/api/arena/cleanup?session_type=${sessionType}`
+        : "/api/arena/cleanup";
+      return await del<CleanupResponse>(endpoint);
+    },
+    [del]
+  );
+
   return {
     startBacktest,
     startForwardTest,
     getBacktestStatus,
     getForwardStatus,
+    cleanupActiveSessions,
   };
 }
 
