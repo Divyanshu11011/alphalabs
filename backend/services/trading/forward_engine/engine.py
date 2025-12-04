@@ -112,7 +112,8 @@ class ForwardEngine:
         starting_capital: float,
         safety_mode: bool = True,
         auto_stop_config: Optional[Dict[str, Any]] = None,
-        email_notifications: bool = False
+        email_notifications: bool = False,
+        allow_leverage: bool = False,
     ) -> None:
         """
         Start a forward test session.
@@ -178,7 +179,8 @@ class ForwardEngine:
                     timeframe=timeframe,
                     position_manager=position_manager,
                     ai_trader=ai_trader,
-                    auto_stop_config=auto_stop_config or {}
+                    auto_stop_config=auto_stop_config or {},
+                    allow_leverage=allow_leverage,
                 )
                 
                 # Store session state

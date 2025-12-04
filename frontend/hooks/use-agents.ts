@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { useApi as useApiRequest } from "@/lib/api";
+import { useApiClient } from "@/lib/api";
 
 export interface CustomIndicator {
     name: string;
@@ -67,41 +67,12 @@ export interface AgentStats {
 }
 
 export function useAgents(initialFilters?: AgentFilters) {
-    const { request } = useApiRequest();
+    const { get, post, put, del } = useApiClient();
     const [agents, setAgents] = useState<Agent[]>([]);
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [filters, setFilters] = useState<AgentFilters>(initialFilters || {});
     const [total, setTotal] = useState(0);
-
-    // Helper methods for different HTTP operations
-    const get = useCallback(
-        async <T,>(endpoint: string) => {
-            return request<T>(endpoint, { method: "GET" });
-        },
-        [request]
-    );
-
-    const post = useCallback(
-        async <T,>(endpoint: string, body?: any) => {
-            return request<T>(endpoint, { method: "POST", body });
-        },
-        [request]
-    );
-
-    const put = useCallback(
-        async <T,>(endpoint: string, body?: any) => {
-            return request<T>(endpoint, { method: "PUT", body });
-        },
-        [request]
-    );
-
-    const del = useCallback(
-        async (endpoint: string) => {
-            return request(endpoint, { method: "DELETE" });
-        },
-        [request]
-    );
 
     // Build query string from filters
     const buildQueryString = useCallback((filters: AgentFilters) => {
@@ -119,27 +90,23 @@ export function useAgents(initialFilters?: AgentFilters) {
     // Fetch agents with filters
     const fetchAgents = useCallback(
         async (customFilters?: AgentFilters) => {
-            console.log("fetchAgents called", { customFilters, filters });
             try {
                 setIsLoading(true);
                 setError(null);
                 const activeFilters = customFilters || filters;
                 const queryString = buildQueryString(activeFilters);
-                console.log("Fetching from:", `/api/agents${queryString}`);
                 const response = await get<{ agents: Agent[]; total: number }>(
                     `/api/agents${queryString}`
                 );
-                console.log("Fetch success:", response);
                 setAgents(response.agents);
                 setTotal(response.total);
             } catch (err) {
-                console.error("Fetch error:", err);
                 setError(err instanceof Error ? err.message : "Failed to fetch agents");
             } finally {
                 setIsLoading(false);
             }
         },
-        [get, buildQueryString] // Removed filters from dependencies
+        [get, buildQueryString, filters]
     );
 
     // Auto-fetch on mount only

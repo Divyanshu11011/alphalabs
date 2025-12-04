@@ -14,7 +14,7 @@ Data Flow:
     - Outgoing: JSON responses containing certificate details or PDF files to the client.
 """
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.responses import Response
+from fastapi.responses import Response, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid import UUID
 
@@ -123,13 +123,15 @@ async def download_certificate_pdf(
             detail="Certificate not found"
         )
     
+    if certificate.pdf_url:
+        return RedirectResponse(
+            url=certificate.pdf_url,
+            status_code=status.HTTP_307_TEMPORARY_REDIRECT
+        )
+    
     try:
-        # Generate PDF
         pdf_bytes = certificate_service.build_pdf_for_certificate(certificate)
-        
-        # Return PDF as downloadable file
         filename = f"certificate_{certificate.verification_code}.pdf"
-        
         return Response(
             content=pdf_bytes,
             media_type="application/pdf",
@@ -137,10 +139,10 @@ async def download_certificate_pdf(
                 "Content-Disposition": f'attachment; filename="{filename}"'
             }
         )
-    except Exception as e:
+    except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to generate PDF: {str(e)}"
+            detail=f"Failed to generate PDF: {str(exc)}"
         )
 
 
@@ -163,6 +165,12 @@ async def download_certificate_image(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Certificate not found"
+        )
+    
+    if certificate.image_url:
+        return RedirectResponse(
+            url=certificate.image_url,
+            status_code=status.HTTP_307_TEMPORARY_REDIRECT
         )
     
     try:

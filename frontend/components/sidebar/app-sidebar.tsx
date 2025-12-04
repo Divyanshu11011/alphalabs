@@ -45,16 +45,29 @@ import { SidebarLogo } from "./sidebar-logo";
 import { SidebarUserFooter } from "./sidebar-user-footer";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { useUIStore } from "@/lib/stores";
-import { DUMMY_NOTIFICATIONS } from "@/lib/dummy-data";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { useNotifications } from "@/hooks/use-notifications";
+import type { NotificationItem } from "@/types";
 
 // Notification content shared between mobile and desktop
-function NotificationList({ displayCount, markAllAsRead, notifications, isMobile = false }: {
+function NotificationList({
+  displayCount,
+  markAllAsRead,
+  notifications,
+  onNotificationClick,
+  onViewAll,
+  total,
+  isMobile = false,
+  isLoading,
+}: {
   displayCount: number;
-  markAllAsRead: () => void;
-  notifications: typeof DUMMY_NOTIFICATIONS;
+  markAllAsRead: () => void | Promise<void>;
+  notifications: NotificationItem[];
+  onNotificationClick: (id: string) => Promise<void> | void;
+  onViewAll: () => void;
+  total: number;
   isMobile?: boolean;
+  isLoading?: boolean;
 }) {
   return (
     <>
@@ -63,32 +76,60 @@ function NotificationList({ displayCount, markAllAsRead, notifications, isMobile
         isMobile ? "justify-center pt-4" : "justify-between"
       )}>
         <h4 className="font-semibold">Notifications</h4>
-        {displayCount > 0 && !isMobile && (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-auto p-0 text-xs text-muted-foreground hover:text-foreground"
-            onClick={() => markAllAsRead()}
-          >
-            Mark all read
-          </Button>
+        {!isMobile && (
+          <div className="flex items-center gap-3">
+            {total > notifications.length && (
+              <Button
+                variant="link"
+                size="sm"
+                className="h-auto p-0 text-xs text-muted-foreground hover:text-foreground"
+                onClick={onViewAll}
+              >
+                View all
+              </Button>
+            )}
+            {displayCount > 0 && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-auto p-0 text-xs text-muted-foreground hover:text-foreground"
+                onClick={() => void markAllAsRead()}
+              >
+                Mark all read
+              </Button>
+            )}
+          </div>
         )}
       </div>
       {/* Mark all read button for mobile - below header */}
-      {displayCount > 0 && isMobile && (
-        <div className="flex justify-end px-3 py-2 border-b border-border/50">
+      {isMobile && (
+        <div className="flex justify-between px-3 py-2 border-b border-border/50">
+          {total > notifications.length && (
+            <Button
+              variant="link"
+              size="sm"
+              className="h-auto py-1 px-2 text-xs text-muted-foreground hover:text-foreground"
+              onClick={onViewAll}
+            >
+              View all
+            </Button>
+          )}
           <Button
             variant="ghost"
             size="sm"
             className="h-auto py-1 px-2 text-xs text-muted-foreground hover:text-foreground"
-            onClick={() => markAllAsRead()}
+            onClick={() => void markAllAsRead()}
           >
             Mark all read
           </Button>
         </div>
       )}
       <ScrollArea className="h-[400px] md:h-[300px]">
-        {notifications.length === 0 ? (
+        {isLoading ? (
+          <div className="flex flex-col items-center justify-center py-8 text-sm text-muted-foreground">
+            Loading notifications...
+          </div>
+        ) : notifications.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-8 text-center text-muted-foreground">
             <Bell className="mb-2 h-8 w-8" />
             <p className="text-sm">No notifications</p>
@@ -101,8 +142,9 @@ function NotificationList({ displayCount, markAllAsRead, notifications, isMobile
                 href={notification.actionUrl || "#"}
                 className={cn(
                   "block p-3 transition-colors hover:bg-muted/50",
-                  !notification.read && "bg-muted/30"
+                  !notification.isRead && "bg-muted/30"
                 )}
+                onClick={() => void onNotificationClick(notification.id)}
               >
                 <div className="flex items-start gap-3">
                   <div
@@ -114,15 +156,15 @@ function NotificationList({ displayCount, markAllAsRead, notifications, isMobile
                       notification.type === "info" && "bg-[hsl(var(--accent-blue))]"
                     )}
                   />
-                  <div className="flex-1 min-w-0 space-y-1">
-                    <p className="text-sm font-medium leading-none truncate">
+                  <div className="min-w-0 flex-1 space-y-1">
+                    <p className="truncate text-sm font-medium leading-none">
                       {notification.title}
                     </p>
-                    <p className="text-xs text-muted-foreground line-clamp-2">
+                    <p className="line-clamp-2 text-xs text-muted-foreground">
                       {notification.message}
                     </p>
                     <p className="text-xs text-muted-foreground">
-                      {notification.timestamp.toLocaleTimeString([], {
+                      {notification.createdAt.toLocaleTimeString([], {
                         hour: "2-digit",
                         minute: "2-digit",
                       })}
@@ -140,10 +182,28 @@ function NotificationList({ displayCount, markAllAsRead, notifications, isMobile
 
 // Notification Bell Component - uses Sheet on mobile, Popover on desktop
 function NotificationBell({ isCollapsed }: { isCollapsed: boolean }) {
-  const { unreadCount, markAllAsRead } = useUIStore();
   const isMobile = useIsMobile();
-  const notifications = DUMMY_NOTIFICATIONS;
-  const displayCount = unreadCount || notifications.filter((n) => !n.read).length;
+  const {
+    notifications,
+    total,
+    unreadCount,
+    isLoading,
+    markAllAsRead,
+    markAsRead,
+    refreshUnreadCount,
+  } = useNotifications();
+  const displayCount =
+    unreadCount || notifications.filter((n) => !n.isRead).length;
+  React.useEffect(() => {
+    void refreshUnreadCount();
+    const id = window.setInterval(() => {
+      void refreshUnreadCount();
+    }, 30000);
+    return () => window.clearInterval(id);
+  }, [refreshUnreadCount]);
+  const handleViewAll = React.useCallback(() => {
+    window.location.href = "/dashboard/settings/notifications";
+  }, []);
 
   const triggerButton = (
     <SidebarMenuButton tooltip="Notifications" className="relative">
@@ -176,8 +236,12 @@ function NotificationBell({ isCollapsed }: { isCollapsed: boolean }) {
           <NotificationList
             displayCount={displayCount}
             markAllAsRead={markAllAsRead}
+            total={total}
             notifications={notifications}
+            onViewAll={handleViewAll}
+            onNotificationClick={markAsRead}
             isMobile={true}
+            isLoading={isLoading}
           />
         </SheetContent>
       </Sheet>
@@ -199,7 +263,11 @@ function NotificationBell({ isCollapsed }: { isCollapsed: boolean }) {
         <NotificationList
           displayCount={displayCount}
           markAllAsRead={markAllAsRead}
+          total={total}
           notifications={notifications}
+          onViewAll={handleViewAll}
+          onNotificationClick={markAsRead}
+          isLoading={isLoading}
         />
       </PopoverContent>
     </Popover>

@@ -33,6 +33,10 @@ class BacktestSessionResponse(BaseModel):
     timeframe: str
     total_candles: int
     websocket_url: str
+    date_preset: Optional[str] = None
+    playback_speed: Optional[str] = None
+    safety_mode: bool = True
+    allow_leverage: bool = False
 
 class BacktestStartResponse(BaseModel):
     session: BacktestSessionResponse
@@ -89,6 +93,7 @@ class ForwardStartRequest(BaseModel):
     email_notifications: bool = True
     auto_stop_on_loss: bool = True
     auto_stop_loss_pct: float = Field(10.0, ge=0.0, le=100.0)
+    allow_leverage: bool = False
 
 class ForwardSessionResponse(BaseModel):
     id: UUID

@@ -54,6 +54,7 @@ class SessionState:
     equity_curve: List[Dict[str, Any]] = field(default=None)
     peak_equity: float = 0.0
     max_drawdown_pct: float = 0.0
+    allow_leverage: bool = False
     
     def __post_init__(self):
         """

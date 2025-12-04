@@ -247,6 +247,11 @@ class CandleProcessor:
                 )
                 return
             
+            leverage = decision.leverage or 1
+            if not session_state.allow_leverage:
+                leverage = 1
+            leverage = max(1, min(int(leverage), 5))
+            
             # Open position
             success = await session_state.position_manager.open_position(
                 action=action.lower(),
@@ -254,7 +259,7 @@ class CandleProcessor:
                 size_percentage=decision.size_percentage,
                 stop_loss=decision.stop_loss_price,
                 take_profit=decision.take_profit_price,
-                leverage=decision.leverage
+                leverage=leverage
             )
             
             if success:

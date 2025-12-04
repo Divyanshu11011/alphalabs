@@ -1,3 +1,4 @@
+
 @router.post("/forward/{id}/stop", response_model=ForwardStopResponse)
 async def stop_forward_test(
     id: UUID,
@@ -127,7 +128,12 @@ async def get_forward_status(
 async def get_forward_active_sessions(
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user),
-    engine: ForwardEngine = Depends(get_forward_engine)
+    engine: ForwardEngine = Depends(get_forward_engine),
+    agent_id: Optional[UUID] = None,
+    statuses: Optional[List[str]] = Query(
+        None,
+        description="Filter by status (running, paused, initializing)"
+    ),
 ):
     """List active forward sessions."""
     sessions: List[ForwardActiveSession] = []
@@ -137,17 +143,22 @@ async def get_forward_active_sessions(
     for session_id_str, state in engine.active_sessions.items():
         if state.agent.user_id != current_user.id:
             continue
+        if agent_id and state.agent.id != agent_id:
+            continue
         session_uuid = UUID(session_id_str)
         stats = state.position_manager.get_stats()
         started_at = state.started_at or now
         elapsed_seconds = int((now - started_at).total_seconds())
+        status_value = "running" if not state.is_paused else "paused"
+        if statuses and status_value not in statuses:
+            continue
         sessions.append(
             ForwardActiveSession(
                 id=session_uuid,
                 agent_id=state.agent.id,
                 agent_name=state.agent.name,
                 asset=state.asset,
-                status="running" if not state.is_paused else "paused",
+                status=status_value,
                 started_at=started_at,
                 duration_display=_format_duration(elapsed_seconds),
                 current_pnl_pct=stats["equity_change_pct"],
@@ -157,13 +168,20 @@ async def get_forward_active_sessions(
         )
         seen_ids.add(session_uuid)
     
-    db_result = await db.execute(
+    base_query = (
         select(TestSession, Agent)
         .join(Agent, Agent.id == TestSession.agent_id)
         .where(TestSession.user_id == current_user.id)
         .where(TestSession.type == "forward")
-        .where(TestSession.status.in_(("running", "paused", "initializing")))
     )
+    if statuses:
+        base_query = base_query.where(TestSession.status.in_(tuple(statuses)))
+    else:
+        base_query = base_query.where(TestSession.status.in_(("running", "paused", "initializing")))
+    if agent_id:
+        base_query = base_query.where(TestSession.agent_id == agent_id)
+    
+    db_result = await db.execute(base_query)
     rows = db_result.all()
     db_session_ids = [row[0].id for row in rows if row[0].id not in seen_ids]
     trade_stats = await _get_trade_stats(db, db_session_ids)
@@ -196,7 +214,7 @@ from decimal import Decimal
 from typing import Optional, Tuple, Dict, List, Any, Set
 from uuid import UUID
 import uuid
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, case
 
@@ -279,12 +297,14 @@ def _format_duration(seconds: int) -> str:
     return " ".join(parts)
 
 
-async def _get_trade_stats(db: AsyncSession, session_ids: List[UUID]) -> Dict[UUID, Tuple[int, float]]:
 def _build_ws_url(path: str) -> str:
     base = settings.WEBSOCKET_BASE_URL.rstrip("/")
     if not path.startswith("/"):
         path = "/" + path
     return f"{base}{path}"
+
+
+async def _get_trade_stats(db: AsyncSession, session_ids: List[UUID]) -> Dict[UUID, Tuple[int, float]]:
     if not session_ids:
         return {}
     result = await db.execute(
@@ -398,20 +418,25 @@ async def start_backtest(
         start_date=start_date,
         end_date=end_date,
         starting_capital=request.starting_capital,
-        safety_mode=request.safety_mode
+        safety_mode=request.safety_mode,
+        allow_leverage=request.allow_leverage,
     )
 
     return {
-        "session": {
-            "id": session_id,
-            "status": "initializing",
-            "agent_id": agent.id,
-            "agent_name": agent.name,
-            "asset": request.asset,
-            "timeframe": request.timeframe,
-            "total_candles": 0, # Will be updated by engine
-            "websocket_url": _build_ws_url(f"/ws/backtest/{session_id}")
-        },
+        "session": BacktestSessionResponse(
+            id=session_id,
+            status="initializing",
+            agent_id=agent.id,
+            agent_name=agent.name,
+            asset=request.asset,
+            timeframe=request.timeframe,
+            total_candles=0,
+            websocket_url=_build_ws_url(f"/ws/backtest/{session_id}"),
+            date_preset=request.date_preset,
+            playback_speed=request.playback_speed,
+            safety_mode=request.safety_mode,
+            allow_leverage=request.allow_leverage,
+        ),
         "message": "Backtest session created"
     }
 
@@ -605,7 +630,7 @@ async def start_forward_test(
         timeframe=request.timeframe,
         starting_capital=Decimal(str(request.starting_capital)),
         safety_mode=request.safety_mode,
-        allow_leverage=False,
+        allow_leverage=request.allow_leverage,
         email_notifications=request.email_notifications,
         auto_stop_on_loss=request.auto_stop_on_loss,
         auto_stop_loss_pct=auto_stop_pct,
@@ -630,7 +655,8 @@ async def start_forward_test(
         starting_capital=request.starting_capital,
         safety_mode=request.safety_mode,
         auto_stop_config=auto_stop_config,
-        email_notifications=request.email_notifications
+        email_notifications=request.email_notifications,
+        allow_leverage=request.allow_leverage,
     )
     
     return {

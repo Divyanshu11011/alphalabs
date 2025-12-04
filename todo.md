@@ -85,7 +85,12 @@
 4. **data-catalog-sync** – ✅ Serve structured assets/timeframes/indicator catalogs from the backend and refactor frontend config forms to consume them.
 5. **certs-exports-storage** – ✅ Wire Supabase storage uploads, add env docs, and expose certificate/export download endpoints with generated assets.
 6. **dashboard-notifications** – ✅ Wire dashboard stats/activity + notifications to live data with pagination, unread counts, and action URLs.
-7. **frontend-api-migration** – Replace `lib/dummy-data` usage across dashboard/agents/arena/results/settings with API + websocket data, using typed hooks and Zustand only for transient UI state.
+7. **frontend-api-migration** – _In progress_  
+   - Added a shared API client + typed helpers (`useResultsApi`, `useArenaCatalogs`, `useArenaApi`, etc.) so hooks/components stop duplicating fetch logic.  
+   - Dashboard surfaces (stats cards, quick-start, activity, live sessions) now depend on `/api/dashboard/*`, `/api/results/stats`, and `/api/arena/forward/active`, with dynamic-island data fed from the provider instead of dummy constants.  
+   - Sidebar notifications bell fetches `/api/notifications` + `/unread-count`, supports mark-read/mark-all, and exposes a "view all" link; unread badges auto-refresh.  
+   - Backtest config screen sources assets/timeframes/presets/playback speeds from `/api/data/*` and posts to `/api/arena/backtest/start`, persisting configs in Zustand before routing to the new session.  
+   - Remaining work: forward-test config + arena battle screen wiring, deleting `lib/dummy-data.ts`, results + settings views, and env surface updates.
 8. **docs-env-refresh** – Update `.env.example`, README, and setup docs to capture new env vars, storage steps, and integration flows so teams can reproduce the end-to-end system.
 
 

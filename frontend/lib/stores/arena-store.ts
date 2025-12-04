@@ -38,7 +38,7 @@ interface ArenaState {
 
 export const useArenaStore = create<ArenaState>((set, get) => ({
   // Active sessions - using dummy data
-  liveSessions: DUMMY_LIVE_SESSIONS,
+  liveSessions: [],
   
   // Battle state
   battleState: null,

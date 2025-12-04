@@ -1,68 +1,75 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { Check, Circle, X, ArrowRight } from "lucide-react";
 import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";
+import { useDashboardDataContext } from "@/components/providers/dashboard-data-provider";
+import { Skeleton } from "@/components/ui/skeleton";
 
-interface Step {
-  id: number;
-  title: string;
-  description: string;
-  href: string;
-  buttonLabel: string;
-  status: "complete" | "current" | "upcoming";
-}
-
-// In a real app, this would come from user onboarding state
-const initialSteps: Step[] = [
-  {
-    id: 1,
-    title: "Create your first agent",
-    description: "Configure an AI trading agent with your strategy",
-    href: "/dashboard/agents/new",
-    buttonLabel: "Create Agent",
-    status: "current",
-  },
-  {
-    id: 2,
-    title: "Run a backtest",
-    description: "Test your agent against historical data",
-    href: "/dashboard/arena/backtest",
-    buttonLabel: "Start Backtest",
-    status: "upcoming",
-  },
-  {
-    id: 3,
-    title: "Generate your first certificate",
-    description: "Get a verified proof of your AI's performance",
-    href: "/dashboard/results",
-    buttonLabel: "View Results",
-    status: "upcoming",
-  },
-];
+type StepStatus = "complete" | "current" | "upcoming";
+const QUICK_START_STORAGE_KEY = "alphalab-quick-start-dismissed";
 
 export function QuickStartGuide() {
   const [isDismissed, setIsDismissed] = useState(false);
-  const [steps] = useState(initialSteps);
+  const { quickStartSteps, quickStartProgress, isLoading } = useDashboardDataContext();
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const stored = window.localStorage.getItem(QUICK_START_STORAGE_KEY);
+    if (stored === "true") {
+      setIsDismissed(true);
+    }
+  }, []);
 
-  // Calculate progress
-  const completedSteps = steps.filter((s) => s.status === "complete").length;
-  const progress = (completedSteps / steps.length) * 100;
+  const enhancedSteps = useMemo(() => {
+    if (!quickStartSteps.length) {
+      return [];
+    }
+    const firstIncompleteIndex = quickStartSteps.findIndex((step) => !step.isComplete);
+    return quickStartSteps.map((step, index) => {
+      let status: StepStatus = "upcoming";
+      if (step.isComplete) {
+        status = "complete";
+      } else if (firstIncompleteIndex === -1 || index === firstIncompleteIndex) {
+        status = "current";
+      }
+      return { ...step, status };
+    });
+  }, [quickStartSteps]);
 
-  // Check if all steps are complete
-  const isComplete = completedSteps === steps.length;
+  if (isDismissed) {
+    return null;
+  }
 
-  // In real app, check user preference from localStorage or API
+  if (isLoading && !enhancedSteps.length) {
+    return (
+      <Card className="border-border/40 bg-card/40">
+        <CardContent className="space-y-4 p-6">
+          <Skeleton className="h-6 w-40" />
+          <Skeleton className="h-3 w-full" />
+          <Skeleton className="h-16 w-full" />
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (!enhancedSteps.length) {
+    return null;
+  }
+
+  const completedSteps = enhancedSteps.filter((step) => step.status === "complete").length;
+  const progress = quickStartProgress || (completedSteps / enhancedSteps.length) * 100;
+  const isComplete = completedSteps === enhancedSteps.length;
+
   if (isDismissed || isComplete) {
     return null;
   }
 
-  // Get current step for CTA
-  const currentStep = steps.find((s) => s.status === "current") || steps[0];
+  const currentStep =
+    enhancedSteps.find((step) => step.status === "current") ?? enhancedSteps[0];
 
   return (
     <Card className="border-[hsl(var(--brand-flame)/0.3)] bg-gradient-to-br from-[hsl(var(--brand-flame)/0.05)] to-transparent">
@@ -72,29 +79,31 @@ export function QuickStartGuide() {
           variant="ghost"
           size="icon"
           className="h-6 w-6 text-muted-foreground hover:text-foreground"
-          onClick={() => setIsDismissed(true)}
+          onClick={() => {
+            setIsDismissed(true);
+            if (typeof window !== "undefined") {
+              window.localStorage.setItem(QUICK_START_STORAGE_KEY, "true");
+            }
+          }}
         >
           <X className="h-4 w-4" />
         </Button>
       </CardHeader>
       <CardContent>
-        {/* Progress Bar */}
         <div className="mb-6">
           <div className="mb-2 flex items-center justify-between text-xs">
             <span className="text-muted-foreground">Progress</span>
             <span className="font-mono text-foreground">
-              {completedSteps}/{steps.length} complete
+              {completedSteps}/{enhancedSteps.length} complete
             </span>
           </div>
           <Progress value={progress} className="h-2" />
         </div>
 
-        {/* Steps */}
         <div className="mb-6 space-y-4">
-          {steps.map((step, index) => (
+          {enhancedSteps.map((step, index) => (
             <div key={step.id} className="relative flex items-start gap-4">
-              {/* Connector Line */}
-              {index < steps.length - 1 && (
+              {index < enhancedSteps.length - 1 && (
                 <div
                   className={cn(
                     "absolute left-[11px] top-8 h-[calc(100%+8px)] w-0.5",
@@ -105,7 +114,6 @@ export function QuickStartGuide() {
                 />
               )}
 
-              {/* Status Icon */}
               <div
                 className={cn(
                   "relative z-10 flex h-6 w-6 shrink-0 items-center justify-center rounded-full border-2",
@@ -130,7 +138,6 @@ export function QuickStartGuide() {
                 )}
               </div>
 
-              {/* Content */}
               <div className="flex-1 pb-4">
                 <h4
                   className={cn(
@@ -138,7 +145,7 @@ export function QuickStartGuide() {
                     step.status === "upcoming" && "text-muted-foreground"
                   )}
                 >
-                  {step.title}
+                  {step.label}
                 </h4>
                 <p className="mt-0.5 text-xs text-muted-foreground">
                   {step.description}
@@ -148,10 +155,9 @@ export function QuickStartGuide() {
           ))}
         </div>
 
-        {/* Current Step CTA */}
         <Button asChild className="w-full gap-2">
           <Link href={currentStep.href}>
-            {currentStep.buttonLabel}
+            {currentStep.ctaText}
             <ArrowRight className="h-4 w-4" />
           </Link>
         </Button>

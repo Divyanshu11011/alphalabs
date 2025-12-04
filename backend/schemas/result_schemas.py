@@ -56,6 +56,7 @@ class TradeSchema(BaseModel):
     pnl_amount: Optional[float]
     pnl_pct: Optional[float]
     entry_reasoning: Optional[str]
+    exit_reasoning: Optional[str]
     exit_type: Optional[str]
 
 class ResultDetail(BaseModel):
@@ -77,6 +78,12 @@ class ResultDetail(BaseModel):
     max_drawdown_pct: float
     sharpe_ratio: float
     profit_factor: float
+    avg_trade_pnl: Optional[float] = None
+    best_trade_pnl: Optional[float] = None
+    worst_trade_pnl: Optional[float] = None
+    avg_holding_time_display: Optional[str] = None
+    equity_curve: Optional[List[Dict[str, Any]]] = None
+    ai_summary: Optional[str] = None
     trades: List[TradeSchema]
 
 class ResultDetailResponse(BaseModel):
@@ -84,6 +91,7 @@ class ResultDetailResponse(BaseModel):
 
 class TradeListResponse(BaseModel):
     trades: List[TradeSchema]
+    pagination: Pagination
 
 class AIThoughtSchema(BaseModel):
     candle_number: int
@@ -94,3 +102,4 @@ class AIThoughtSchema(BaseModel):
 
 class ReasoningResponse(BaseModel):
     thoughts: List[AIThoughtSchema]
+    pagination: Pagination

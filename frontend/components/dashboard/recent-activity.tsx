@@ -6,58 +6,36 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import { useDashboardDataContext } from "@/components/providers/dashboard-data-provider";
+import { Skeleton } from "@/components/ui/skeleton";
+import type { ActivityItem as DashboardActivityItem } from "@/types";
 
-interface ActivityItem {
-  id: string;
-  type: "backtest_complete" | "backtest_failed" | "agent_created" | "forward_complete";
-  agentName: string;
-  result?: number; // PnL percentage
-  timestamp: string;
-  details?: string;
-}
+const formatRelativeTime = (date: Date) => {
+  const rtf = new Intl.RelativeTimeFormat("en", { numeric: "auto" });
+  const diffMs = date.getTime() - Date.now();
+  const diffMinutes = Math.round(diffMs / (1000 * 60));
+  if (Math.abs(diffMinutes) < 60) {
+    return rtf.format(diffMinutes, "minute");
+  }
+  const diffHours = Math.round(diffMinutes / 60);
+  if (Math.abs(diffHours) < 24) {
+    return rtf.format(diffHours, "hour");
+  }
+  const diffDays = Math.round(diffHours / 24);
+  return rtf.format(diffDays, "day");
+};
 
-// Mock data - in real app would come from API
-const mockActivities: ActivityItem[] = [
-  {
-    id: "1",
-    type: "backtest_complete",
-    agentName: "α-1",
-    result: 23.4,
-    timestamp: "2 hours ago",
-    details: "Monk Mode • BTC/USDT",
-  },
-  {
-    id: "2",
-    type: "backtest_failed",
-    agentName: "β-2",
-    result: -12.1,
-    timestamp: "5 hours ago",
-    details: "Omni Mode • ETH/USDT",
-  },
-  {
-    id: "3",
-    type: "agent_created",
-    agentName: "γ-3",
-    timestamp: "Yesterday",
-    details: "Monk Mode • Ready for testing",
-  },
-];
-
-function ActivityItemCard({ activity }: { activity: ActivityItem }) {
+function ActivityItemCard({ activity }: { activity: DashboardActivityItem }) {
   const getStatusColor = () => {
     switch (activity.type) {
-      case "backtest_complete":
-        return activity.result && activity.result > 0
+      case "test_completed":
+        return activity.pnl && activity.pnl > 0
           ? "bg-[hsl(var(--accent-green))]"
           : "bg-[hsl(var(--accent-red))]";
-      case "backtest_failed":
+      case "test_failed":
         return "bg-[hsl(var(--accent-red))]";
       case "agent_created":
         return "bg-[hsl(var(--accent-amber))]";
-      case "forward_complete":
-        return activity.result && activity.result > 0
-          ? "bg-[hsl(var(--accent-green))]"
-          : "bg-[hsl(var(--accent-red))]";
       default:
         return "bg-muted";
     }
@@ -65,89 +43,61 @@ function ActivityItemCard({ activity }: { activity: ActivityItem }) {
 
   const getActionLabel = () => {
     switch (activity.type) {
-      case "backtest_complete":
-      case "backtest_failed":
+      case "test_completed":
         return "Backtest Complete";
+      case "test_failed":
+        return "Backtest Update";
       case "agent_created":
         return "Agent Created";
-      case "forward_complete":
-        return "Forward Test Complete";
       default:
         return "Activity";
     }
   };
 
-  const getLinkHref = () => {
-    switch (activity.type) {
-      case "backtest_complete":
-      case "backtest_failed":
-      case "forward_complete":
-        return `/dashboard/results/${activity.id}`;
-      case "agent_created":
-        return `/dashboard/agents/${activity.id}/edit`;
-      default:
-        return "#";
-    }
-  };
+  const linkHref =
+    activity.actionUrl ||
+    (activity.resultId
+      ? `/dashboard/results/${activity.resultId}`
+      : "#");
 
-  const getLinkLabel = () => {
-    switch (activity.type) {
-      case "agent_created":
-        return "Edit";
-      default:
-        return "View";
-    }
-  };
+  const linkLabel = activity.type === "agent_created" ? "Edit" : "View";
 
   return (
     <div className="group rounded-lg border border-border/50 bg-card/30 p-3 sm:p-4 transition-colors hover:bg-muted/30">
-      {/* Mobile: Stack layout, Desktop: Flex row */}
-      <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4">
-        {/* Top row on mobile: Status + Agent Name + Badge */}
-        <div className="flex items-center gap-3 sm:flex-1 min-w-0">
-          {/* Status Indicator */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-4">
+        <div className="flex min-w-0 items-center gap-3 sm:flex-1">
           <div className={cn("h-2 w-2 shrink-0 rounded-full", getStatusColor())} />
-
-          {/* Content */}
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
               <span className="font-mono text-sm font-medium">{activity.agentName}</span>
               <span className="text-sm text-muted-foreground">{getActionLabel()}</span>
             </div>
-            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground mt-0.5">
-              <span>{activity.timestamp}</span>
-              {activity.details && (
-                <>
-                  <span className="hidden xs:inline">•</span>
-                  <span className="w-full xs:w-auto">{activity.details}</span>
-                </>
-              )}
+            <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+              <span>{formatRelativeTime(activity.timestamp)}</span>
+              <span className="hidden xs:inline">•</span>
+              <span className="w-full xs:w-auto">{activity.description}</span>
             </div>
           </div>
-
-          {/* Result Badge - visible on mobile in the row */}
-          {activity.result !== undefined && (
+          {activity.pnl !== undefined && (
             <Badge
               variant="outline"
               className={cn(
                 "font-mono text-xs shrink-0",
-                activity.result > 0
+                activity.pnl > 0
                   ? "border-[hsl(var(--accent-green)/0.3)] bg-[hsl(var(--accent-green)/0.1)] text-[hsl(var(--accent-green))]"
                   : "border-[hsl(var(--accent-red)/0.3)] bg-[hsl(var(--accent-red)/0.1)] text-[hsl(var(--accent-red))]"
               )}
             >
-              {activity.result > 0 ? "+" : ""}
-              {activity.result}%
+              {activity.pnl > 0 ? "+" : ""}
+              {activity.pnl.toFixed(1)}%
             </Badge>
           )}
         </div>
-
-        {/* Action Link - always visible on mobile, hover on desktop */}
         <Link
-          href={getLinkHref()}
-          className="flex items-center gap-1 text-xs text-muted-foreground sm:opacity-0 transition-opacity group-hover:opacity-100 hover:text-foreground ml-5 sm:ml-0"
+          href={linkHref}
+          className="ml-5 flex items-center gap-1 text-xs text-muted-foreground transition-opacity hover:text-foreground sm:ml-0 sm:opacity-0 group-hover:opacity-100"
         >
-          {getLinkLabel()}
+          {linkLabel}
           <ArrowRight className="h-3 w-3" />
         </Link>
       </div>
@@ -173,7 +123,7 @@ function EmptyState() {
 }
 
 export function RecentActivity() {
-  const activities = mockActivities;
+  const { activity, isLoading } = useDashboardDataContext();
 
   return (
     <Card className="border-border/50 bg-card/30">
@@ -188,12 +138,16 @@ export function RecentActivity() {
         </Link>
       </CardHeader>
       <CardContent className="space-y-3">
-        {activities.length === 0 ? (
+        {isLoading && !activity.length ? (
+          <div className="space-y-3">
+            {[1, 2, 3].map((key) => (
+              <Skeleton key={key} className="h-20 w-full rounded-lg" />
+            ))}
+          </div>
+        ) : activity.length === 0 ? (
           <EmptyState />
         ) : (
-          activities.map((activity) => (
-            <ActivityItemCard key={activity.id} activity={activity} />
-          ))
+          activity.map((item) => <ActivityItemCard key={item.id} activity={item} />)
         )}
       </CardContent>
     </Card>

@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { History, Zap, Bot, Calendar, Clock, DollarSign, Shield, TrendingUp } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { History, Zap, Bot, Clock, DollarSign, Shield, TrendingUp } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -18,81 +18,126 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { useAgentsStore, useArenaStore } from "@/lib/stores";
-
-const assets = [
-  { id: "btc-usdt", name: "BTC/USDT", icon: "₿" },
-  { id: "eth-usdt", name: "ETH/USDT", icon: "Ξ" },
-  { id: "sol-usdt", name: "SOL/USDT", icon: "◎" },
-];
-
-const timeframes = [
-  { id: "15m", name: "15 Minutes" },
-  { id: "1h", name: "1 Hour" },
-  { id: "4h", name: "4 Hours" },
-  { id: "1d", name: "1 Day" },
-];
-
-const datePresets = [
-  { id: "7d", name: "Last 7 days" },
-  { id: "30d", name: "Last 30 days" },
-  { id: "90d", name: "Last 90 days" },
-  { id: "bull", name: "Bull Run" },
-  { id: "crash", name: "Crash" },
-];
-
-const speedOptions = [
-  { id: "slow", name: "Slow (1s/candle)", ms: 1000 },
-  { id: "normal", name: "Normal (500ms/candle)", ms: 500 },
-  { id: "fast", name: "Fast (200ms/candle)", ms: 200 },
-  { id: "instant", name: "Instant", ms: 0 },
-];
+import { useArenaCatalogs } from "@/hooks/use-arena-catalogs";
+import { useArenaApi } from "@/hooks/use-arena-api";
 
 export function BacktestConfig() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const preselectedAgent = searchParams.get("agent");
-  
-  // Get agents from store
   const { agents } = useAgentsStore();
   const { setBacktestConfig } = useArenaStore();
+  const { assets, timeframes, datePresets, playbackSpeeds, isLoading, error: catalogError } =
+    useArenaCatalogs();
+  const { startBacktest } = useArenaApi();
 
   const [config, setConfig] = useState({
     agentId: preselectedAgent || "",
-    asset: "btc-usdt",
-    timeframe: "1h",
+    asset: "",
+    timeframe: "",
     datePreset: "30d",
     startDate: "",
     endDate: "",
     capital: "10000",
-    speed: "normal",
+    speed: "normal" as "slow" | "normal" | "fast" | "instant",
     safetyMode: true,
     allowLeverage: false,
   });
+  const [formError, setFormError] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (!config.asset && assets.length) {
+      setConfig((prev) => ({ ...prev, asset: assets[0].id }));
+    }
+  }, [assets, config.asset]);
+
+  useEffect(() => {
+    if (!config.timeframe && timeframes.length) {
+      setConfig((prev) => ({ ...prev, timeframe: timeframes[0].id }));
+    }
+  }, [timeframes, config.timeframe]);
 
   const selectedAgent = agents.find((a) => a.id === config.agentId);
-  const estimatedCandles = config.datePreset === "30d" ? 720 : config.datePreset === "7d" ? 168 : 2160;
-  const estimatedTime = Math.ceil((estimatedCandles * (speedOptions.find(s => s.id === config.speed)?.ms || 500)) / 60000);
+  const timeframeMeta = timeframes.find((tf) => tf.id === config.timeframe);
+  const presetMeta = datePresets.find((preset) => preset.id === config.datePreset);
+  const playbackMeta = playbackSpeeds.find((speed) => speed.id === config.speed);
+  const estimatedCandles = useMemo(() => {
+    if (!timeframeMeta || !presetMeta?.days) return 0;
+    const minutes = timeframeMeta.minutes || 60;
+    return Math.max(1, Math.round((presetMeta.days * 24 * 60) / minutes));
+  }, [timeframeMeta, presetMeta]);
+  const estimatedTime = useMemo(() => {
+    const msPerCandle = playbackMeta?.ms ?? 500;
+    return Math.max(1, Math.ceil((estimatedCandles * msPerCandle) / 60000));
+  }, [estimatedCandles, playbackMeta]);
 
-  const handleStartBattle = () => {
-    // Save config to store before navigating
-    setBacktestConfig({
-      agentId: config.agentId,
-      asset: config.asset,
-      timeframe: config.timeframe as "15m" | "1h" | "4h" | "1d",
-      datePreset: config.datePreset,
-      startDate: config.startDate || undefined,
-      endDate: config.endDate || undefined,
-      capital: parseInt(config.capital),
-      speed: config.speed as "slow" | "normal" | "fast" | "instant",
-      safetyMode: config.safetyMode,
-      allowLeverage: config.allowLeverage,
-    });
-    
-    const sessionId = Math.random().toString(36).substring(7);
-    router.push(`/dashboard/arena/backtest/${sessionId}`);
+  const handleStartBattle = async () => {
+    if (!config.agentId || !config.asset || !config.timeframe) {
+      setFormError("Please select an agent, asset, and timeframe.");
+      return;
+    }
+    setFormError(null);
+    setIsSubmitting(true);
+    const usingCustomDates = config.datePreset === "custom";
+    try {
+      const session = await startBacktest({
+        agent_id: config.agentId,
+        asset: config.asset,
+        timeframe: config.timeframe,
+        date_preset: usingCustomDates ? null : config.datePreset,
+        start_date: usingCustomDates && config.startDate ? config.startDate : null,
+        end_date: usingCustomDates && config.endDate ? config.endDate : null,
+        starting_capital: Number(config.capital),
+        playback_speed: config.speed,
+        safety_mode: config.safetyMode,
+        allow_leverage: config.allowLeverage,
+      });
+
+      setBacktestConfig({
+        agentId: config.agentId,
+        asset: config.asset,
+        timeframe: config.timeframe as "15m" | "1h" | "4h" | "1d",
+        datePreset: config.datePreset,
+        startDate: config.startDate || undefined,
+        endDate: config.endDate || undefined,
+        capital: Number(config.capital),
+        speed: config.speed,
+        safetyMode: config.safetyMode,
+        allowLeverage: config.allowLeverage,
+      });
+
+      router.push(`/dashboard/arena/backtest/${session.id}`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to start backtest";
+      setFormError(message);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
-  const canStart = config.agentId && config.asset && config.capital;
+  const canStart =
+    !!config.agentId && !!config.asset && !!config.timeframe && !!config.capital && !isLoading;
+
+  if (isLoading && assets.length === 0 && timeframes.length === 0) {
+    return (
+      <Card className="border-border/50 bg-card/30">
+        <CardContent className="space-y-2 p-4 text-sm text-muted-foreground">
+          Loading arena configuration...
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (catalogError && assets.length === 0) {
+    return (
+      <Card className="border-destructive/40 bg-destructive/10">
+        <CardContent className="space-y-2 p-4 text-sm text-destructive">
+          {catalogError}
+        </CardContent>
+      </Card>
+    );
+  }
 
   return (
     <div className="space-y-4">
@@ -187,12 +232,12 @@ export function BacktestConfig() {
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="space-y-1.5">
                 <Label className="text-xs">Asset</Label>
-                  <AnimatedSelect
-                    value={config.asset}
-                    onValueChange={(value) => setConfig({ ...config, asset: value })}
-                  >
-                  <AnimatedSelectTrigger className="h-8 text-sm">
-                      <AnimatedSelectValue />
+              <AnimatedSelect
+                value={config.asset}
+                onValueChange={(value) => setConfig({ ...config, asset: value })}
+              >
+                <AnimatedSelectTrigger className="h-8 text-sm">
+                      <AnimatedSelectValue placeholder="Select asset" />
                     </AnimatedSelectTrigger>
                     <AnimatedSelectContent>
                       {assets.map((asset) => (
@@ -213,7 +258,7 @@ export function BacktestConfig() {
                     onValueChange={(value) => setConfig({ ...config, timeframe: value })}
                   >
                   <AnimatedSelectTrigger className="h-8 text-sm">
-                      <AnimatedSelectValue />
+                      <AnimatedSelectValue placeholder="Select timeframe" />
                     </AnimatedSelectTrigger>
                     <AnimatedSelectContent>
                       {timeframes.map((tf) => (
@@ -279,13 +324,15 @@ export function BacktestConfig() {
                   <Label className="text-xs">Playback Speed</Label>
                   <AnimatedSelect
                     value={config.speed}
-                    onValueChange={(value) => setConfig({ ...config, speed: value })}
+                    onValueChange={(value) =>
+                      setConfig({ ...config, speed: value as typeof config.speed })
+                    }
                   >
                     <AnimatedSelectTrigger className="text-sm h-8">
-                      <AnimatedSelectValue />
+                      <AnimatedSelectValue placeholder="Select speed" />
                     </AnimatedSelectTrigger>
                     <AnimatedSelectContent>
-                      {speedOptions.map((speed) => (
+                      {playbackSpeeds.map((speed) => (
                         <AnimatedSelectItem key={speed.id} value={speed.id} textValue={speed.name}>
                           {speed.name}
                         </AnimatedSelectItem>
@@ -341,13 +388,13 @@ export function BacktestConfig() {
                 <div className="flex justify-between">
                   <span className="text-muted-foreground text-[10px]">Asset</span>
                   <span className="font-mono text-[10px]">
-                    {assets.find((a) => a.id === config.asset)?.name}
+                    {assets.find((a) => a.id === config.asset)?.name || "—"}
                   </span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-muted-foreground text-[10px]">Period</span>
                   <span className="font-mono text-[10px]">
-                    {datePresets.find((d) => d.id === config.datePreset)?.name}
+                    {presetMeta?.name ?? "Custom"}
                   </span>
                 </div>
                 <div className="flex justify-between">
@@ -360,17 +407,23 @@ export function BacktestConfig() {
                 <div className="flex items-center gap-1.5 text-[10px]">
                   <Clock className="h-3 w-3 text-muted-foreground" />
                   <span className="text-muted-foreground">Est. time:</span>
-                  <span className="font-mono font-medium">~{estimatedTime} min</span>
+                  <span className="font-mono font-medium">
+                    {estimatedTime ? `~${estimatedTime} min` : "Pending"}
+                  </span>
                 </div>
               </div>
 
+              {formError && (
+                <p className="text-[10px] text-destructive">{formError}</p>
+              )}
+
               <Button
                 className="w-full gap-2 bg-primary text-primary-foreground hover:bg-primary/90 h-8 text-xs"
-                disabled={!canStart}
+                disabled={!canStart || isSubmitting}
                 onClick={handleStartBattle}
               >
                 <Zap className="h-3.5 w-3.5" />
-                Start Battle
+                {isSubmitting ? "Starting..." : "Start Battle"}
               </Button>
             </CardContent>
           </Card>

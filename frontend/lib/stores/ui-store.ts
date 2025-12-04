@@ -5,7 +5,7 @@
 
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import type { Theme, AccentColor, Notification } from "@/types";
+import type { Theme, AccentColor } from "@/types";
 
 interface UIState {
   // Theme
@@ -25,13 +25,6 @@ interface UIState {
   commandPaletteOpen: boolean;
   setCommandPaletteOpen: (open: boolean) => void;
 
-  // Notifications
-  notifications: Notification[];
-  unreadCount: number;
-  addNotification: (notification: Omit<Notification, "id" | "timestamp" | "read">) => void;
-  markAsRead: (id: string) => void;
-  markAllAsRead: () => void;
-  clearNotifications: () => void;
 }
 
 export const useUIStore = create<UIState>()(
@@ -54,35 +47,7 @@ export const useUIStore = create<UIState>()(
       commandPaletteOpen: false,
       setCommandPaletteOpen: (open) => set({ commandPaletteOpen: open }),
 
-      // Notifications
-      notifications: [],
-      unreadCount: 0,
-      addNotification: (notification) =>
-        set((state) => {
-          const newNotification: Notification = {
-            ...notification,
-            id: `notif-${Date.now()}`,
-            timestamp: new Date(),
-            read: false,
-          };
-          return {
-            notifications: [newNotification, ...state.notifications].slice(0, 50), // Keep max 50
-            unreadCount: state.unreadCount + 1,
-          };
-        }),
-      markAsRead: (id) =>
-        set((state) => ({
-          notifications: state.notifications.map((n) =>
-            n.id === id ? { ...n, read: true } : n
-          ),
-          unreadCount: Math.max(0, state.unreadCount - 1),
-        })),
-      markAllAsRead: () =>
-        set((state) => ({
-          notifications: state.notifications.map((n) => ({ ...n, read: true })),
-          unreadCount: 0,
-        })),
-      clearNotifications: () => set({ notifications: [], unreadCount: 0 }),
+      // Notifications (handled via API now)
     }),
     {
       name: "alphalab-ui",

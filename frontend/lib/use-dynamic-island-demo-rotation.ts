@@ -26,21 +26,49 @@ export interface PreparingConfig {
   type: "backtest" | "forward";
 }
 
-const buildDashboardSequence = (): RotationStep[] => {
+interface RotationData {
+  stats?: {
+    totalAgents: number;
+    testsRun: number;
+    bestAgentName?: string;
+  };
+  avgPnL?: number | null;
+  winRate?: number | null;
+  activity?: {
+    agentName: string;
+    description: string;
+    pnl?: number | null;
+    resultId?: string | null;
+    trades?: number | null;
+    winRate?: number | null;
+  };
+  liveSession?: LiveSessionData;
+}
+
+const buildDashboardSequence = (data?: RotationData): RotationStep[] => {
   const store = useDynamicIslandStore.getState()
+  const stats = data?.stats
+  const totalAgents = stats?.totalAgents ?? DUMMY_DASHBOARD_STATS.totalAgents
+  const testsRun = stats?.testsRun ?? DUMMY_DASHBOARD_STATS.testsRun
+  const bestAgent = stats?.bestAgentName ?? DUMMY_DASHBOARD_STATS.bestAgent?.name ?? "—"
+  const avgPnL = data?.avgPnL ?? DUMMY_RESULTS_STATS.avgPnL
+  const avgPnlDisplay =
+    typeof avgPnL === "number" ? avgPnL.toFixed(1) : avgPnL ?? "0"
+  const winRatePercent = data?.winRate ?? DUMMY_RESULTS_STATS.profitablePercent
 
   const narratorData: NarratorData = {
     text: "Your LLM collective is compounding edge",
     type: "info",
-    details: `Agents live: ${DUMMY_DASHBOARD_STATS.totalAgents} • Avg PnL: +${DUMMY_RESULTS_STATS.avgPnL}%`,
+    details: `Agents live: ${totalAgents} • Avg PnL: +${avgPnlDisplay}%`,
     metrics: [
-      { label: "Win rate", value: `${DUMMY_RESULTS_STATS.profitablePercent}%` },
-      { label: "Tests run", value: `${DUMMY_DASHBOARD_STATS.testsRun}` },
-      { label: "Best agent", value: DUMMY_DASHBOARD_STATS.bestAgent },
+      { label: "Win rate", value: `${winRatePercent ?? 0}%` },
+      { label: "Tests run", value: `${testsRun}` },
+      { label: "Best agent", value: bestAgent },
     ],
   }
 
   const liveSessionData: LiveSessionData =
+    data?.liveSession ||
     DUMMY_LIVE_SESSIONS[0] || {
       id: "session-demo",
       agentId: "agent-demo",
@@ -58,7 +86,7 @@ const buildDashboardSequence = (): RotationStep[] => {
   const liveSessionAction = () => store.showLiveSession(liveSessionData)
   const idleAction = () => store.showIdle()
 
-  const activity = DUMMY_ACTIVITY?.[0]
+  const activity = data?.activity ?? DUMMY_ACTIVITY?.[0]
   const secondNarratorAction =
     activity &&
     (() => {
@@ -101,10 +129,10 @@ const buildDashboardSequence = (): RotationStep[] => {
   return sequence
 }
 
-const buildSequence = (context: RotationContext): RotationStep[] => {
+const buildSequence = (context: RotationContext, data?: RotationData): RotationStep[] => {
   switch (context) {
     case "dashboard":
-      return buildDashboardSequence()
+      return buildDashboardSequence(data)
     default:
       return []
   }
@@ -112,7 +140,8 @@ const buildSequence = (context: RotationContext): RotationStep[] => {
 
 export const useDynamicIslandDemoRotation = (
   context: RotationContext | null,
-  preparingConfig?: PreparingConfig
+  preparingConfig?: PreparingConfig,
+  rotationData?: RotationData
 ) => {
   const timeoutRef = useRef<number | null>(null)
   const stepIndexRef = useRef(0)
@@ -141,7 +170,7 @@ export const useDynamicIslandDemoRotation = (
     }
 
     // Otherwise run the rotation sequence (dashboard)
-    const steps = buildSequence(context)
+    const steps = buildSequence(context, rotationData)
 
     if (!steps.length) {
       return
@@ -166,5 +195,5 @@ export const useDynamicIslandDemoRotation = (
       }
       stepIndexRef.current = 0
     }
-  }, [context, preparingConfig?.type])
+  }, [context, preparingConfig?.type, rotationData])
 }

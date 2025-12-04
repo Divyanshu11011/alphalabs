@@ -1,9 +1,13 @@
+import io
+import json
+import zipfile
 from datetime import datetime
 from typing import List, Optional, Dict
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, desc
+from sqlalchemy import select, func, desc, or_
 from sqlalchemy.orm import selectinload
 
 from database import get_db
@@ -26,31 +30,53 @@ async def list_results(
     type: Optional[str] = Query(None, regex="^(backtest|forward)$"),
     agent_id: Optional[UUID] = None,
     asset: Optional[str] = None,
+    mode: Optional[str] = Query(None, regex="^(monk|omni)$"),
+    profitable: Optional[bool] = None,
+    search: Optional[str] = None,
+    date_from: Optional[datetime] = None,
+    date_to: Optional[datetime] = None,
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user)
 ):
     """List test results with pagination and filtering."""
-    # Build base query
-    query = (
+    filters = [TestResult.user_id == current_user.id]
+    if type:
+        filters.append(TestResult.type == type)
+    if agent_id:
+        filters.append(TestResult.agent_id == agent_id)
+    if asset:
+        filters.append(TestResult.asset == asset)
+    if mode:
+        filters.append(TestResult.mode == mode)
+    if profitable is not None:
+        filters.append(TestResult.is_profitable.is_(profitable))
+    if date_from:
+        filters.append(TestResult.created_at >= date_from)
+    if date_to:
+        filters.append(TestResult.created_at <= date_to)
+    if search:
+        like_term = f"%{search.lower()}%"
+        filters.append(
+            or_(
+                func.lower(TestResult.asset).like(like_term),
+                func.lower(TestResult.timeframe).like(like_term),
+            )
+        )
+    base_query = (
         select(TestResult)
-        .where(TestResult.user_id == current_user.id)
+        .where(*filters)
         .options(
             selectinload(TestResult.agent),
             selectinload(TestResult.certificate)
         )
     )
     
-    if type:
-        query = query.where(TestResult.type == type)
-    if agent_id:
-        query = query.where(TestResult.agent_id == agent_id)
-    if asset:
-        query = query.where(TestResult.asset == asset)
-        
-    count_query = select(func.count()).select_from(query.subquery())
+    count_query = select(func.count()).select_from(
+        select(TestResult.id).where(*filters).subquery()
+    )
     total = await db.scalar(count_query)
     
-    query = query.order_by(desc(TestResult.created_at))
+    query = base_query.order_by(desc(TestResult.created_at))
     query = query.offset((page - 1) * limit).limit(limit)
     
     result = await db.execute(query)
@@ -165,7 +191,9 @@ async def get_result_detail(
     
     # Get trades
     trades_res = await db.execute(
-        select(Trade).where(Trade.session_id == test_result.session_id).order_by(Trade.trade_number)
+        select(Trade)
+        .where(Trade.session_id == test_result.session_id)
+        .order_by(Trade.trade_number)
     )
     trades = trades_res.scalars().all()
     
@@ -183,6 +211,7 @@ async def get_result_detail(
             pnl_amount=float(t.pnl_amount) if t.pnl_amount else None,
             pnl_pct=float(t.pnl_pct) if t.pnl_pct else None,
             entry_reasoning=t.entry_reasoning,
+            exit_reasoning=t.exit_reasoning,
             exit_type=t.exit_type
         ))
         if t.pnl_amount and t.pnl_amount > 0:
@@ -210,6 +239,12 @@ async def get_result_detail(
             "max_drawdown_pct": float(test_result.max_drawdown_pct or 0),
             "sharpe_ratio": float(test_result.sharpe_ratio or 0),
             "profit_factor": float(test_result.profit_factor or 0),
+            "avg_trade_pnl": float(test_result.avg_trade_pnl) if test_result.avg_trade_pnl else None,
+            "best_trade_pnl": float(test_result.best_trade_pnl) if test_result.best_trade_pnl else None,
+            "worst_trade_pnl": float(test_result.worst_trade_pnl) if test_result.worst_trade_pnl else None,
+            "avg_holding_time_display": test_result.avg_holding_time_display,
+            "equity_curve": test_result.equity_curve or [],
+            "ai_summary": test_result.ai_summary,
             "trades": trade_schemas
         }
     }
@@ -217,6 +252,11 @@ async def get_result_detail(
 @router.get("/{id}/trades", response_model=TradeListResponse)
 async def get_result_trades(
     id: UUID,
+    page: int = Query(1, ge=1),
+    limit: int = Query(50, ge=1, le=500),
+    direction: Optional[str] = Query(None, regex="^(long|short)$"),
+    outcome: Optional[str] = Query(None, regex="^(win|loss)$"),
+    search: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user)
 ):
@@ -229,9 +269,32 @@ async def get_result_trades(
     if not result_row:
         raise HTTPException(status_code=404, detail="Result not found")
         
-    # Get trades
+    trade_filters = [Trade.session_id == result_row.session_id]
+    if direction:
+        trade_filters.append(func.lower(Trade.type) == direction)
+    if outcome:
+        if outcome == "win":
+            trade_filters.append(Trade.pnl_amount > 0)
+        else:
+            trade_filters.append(Trade.pnl_amount <= 0)
+    if search:
+        like_term = f"%{search.lower()}%"
+        trade_filters.append(
+            or_(
+                func.lower(Trade.entry_reasoning).like(like_term),
+                func.lower(Trade.exit_reasoning).like(like_term),
+            )
+        )
+    
+    count_query = select(func.count()).where(*trade_filters)
+    total = await db.scalar(count_query)
+    
     trades_res = await db.execute(
-        select(Trade).where(Trade.session_id == result_row.session_id).order_by(Trade.trade_number)
+        select(Trade)
+        .where(*trade_filters)
+        .order_by(Trade.trade_number)
+        .offset((page - 1) * limit)
+        .limit(limit)
     )
     trades = trades_res.scalars().all()
     
@@ -247,14 +310,26 @@ async def get_result_trades(
                 pnl_amount=float(t.pnl_amount) if t.pnl_amount else None,
                 pnl_pct=float(t.pnl_pct) if t.pnl_pct else None,
                 entry_reasoning=t.entry_reasoning,
+                exit_reasoning=t.exit_reasoning,
                 exit_type=t.exit_type
             ) for t in trades
-        ]
+        ],
+        "pagination": {
+            "page": page,
+            "limit": limit,
+            "total": total or 0,
+            "total_pages": (total + limit - 1) // limit if total else 0
+        }
     }
 
 @router.get("/{id}/reasoning", response_model=ReasoningResponse)
 async def get_result_reasoning(
     id: UUID,
+    page: int = Query(1, ge=1),
+    limit: int = Query(100, ge=1, le=1000),
+    candle_from: Optional[int] = None,
+    candle_to: Optional[int] = None,
+    decision: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user)
 ):
@@ -266,9 +341,23 @@ async def get_result_reasoning(
     if not result_row:
         raise HTTPException(status_code=404, detail="Result not found")
         
-    # Get thoughts
+    thought_filters = [AiThought.session_id == result_row.session_id]
+    if candle_from is not None:
+        thought_filters.append(AiThought.candle_number >= candle_from)
+    if candle_to is not None:
+        thought_filters.append(AiThought.candle_number <= candle_to)
+    if decision:
+        thought_filters.append(func.lower(AiThought.decision) == decision.lower())
+    
+    count_query = select(func.count()).where(*thought_filters)
+    total = await db.scalar(count_query)
+    
     thoughts_res = await db.execute(
-        select(AiThought).where(AiThought.session_id == result_row.session_id).order_by(AiThought.candle_number)
+        select(AiThought)
+        .where(*thought_filters)
+        .order_by(AiThought.candle_number)
+        .offset((page - 1) * limit)
+        .limit(limit)
     )
     thoughts = thoughts_res.scalars().all()
     
@@ -281,5 +370,116 @@ async def get_result_reasoning(
                 reasoning=t.reasoning,
                 indicator_values=t.indicator_values or {}
             ) for t in thoughts
-        ]
+        ],
+        "pagination": {
+            "page": page,
+            "limit": limit,
+            "total": total or 0,
+            "total_pages": (total + limit - 1) // limit if total else 0
+        }
     }
+
+
+@router.get("/{id}/export")
+async def export_result(
+    id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
+):
+    """Download a zipped export containing result, trades, and reasoning."""
+    result = await db.execute(
+        select(TestResult)
+        .where(TestResult.id == id, TestResult.user_id == current_user.id)
+        .options(selectinload(TestResult.agent))
+    )
+    test_result = result.scalar_one_or_none()
+    if not test_result:
+        raise HTTPException(status_code=404, detail="Result not found")
+    
+    trades_res = await db.execute(
+        select(Trade)
+        .where(Trade.session_id == test_result.session_id)
+        .order_by(Trade.trade_number)
+    )
+    trades = trades_res.scalars().all()
+    
+    thoughts_res = await db.execute(
+        select(AiThought)
+        .where(AiThought.session_id == test_result.session_id)
+        .order_by(AiThought.candle_number)
+    )
+    thoughts = thoughts_res.scalars().all()
+    
+    export_payload = {
+        "result": {
+            "id": str(test_result.id),
+            "session_id": str(test_result.session_id),
+            "type": test_result.type,
+            "agent_id": str(test_result.agent_id),
+            "agent_name": test_result.agent.name if test_result.agent else "Unknown",
+            "asset": test_result.asset,
+            "mode": test_result.mode,
+            "timeframe": test_result.timeframe,
+            "start_date": test_result.start_date.isoformat(),
+            "end_date": (test_result.end_date or datetime.utcnow()).isoformat(),
+            "starting_capital": float(test_result.starting_capital),
+            "ending_capital": float(test_result.ending_capital),
+            "total_pnl_pct": float(test_result.total_pnl_pct),
+            "win_rate": float(test_result.win_rate or 0),
+            "max_drawdown_pct": float(test_result.max_drawdown_pct or 0),
+            "avg_trade_pnl": float(test_result.avg_trade_pnl) if test_result.avg_trade_pnl else None,
+            "best_trade_pnl": float(test_result.best_trade_pnl) if test_result.best_trade_pnl else None,
+            "worst_trade_pnl": float(test_result.worst_trade_pnl) if test_result.worst_trade_pnl else None,
+            "equity_curve": test_result.equity_curve,
+            "ai_summary": test_result.ai_summary,
+        },
+        "trades": [
+            {
+                "trade_number": t.trade_number,
+                "type": t.type,
+                "entry_time": t.entry_time.isoformat() if t.entry_time else None,
+                "exit_time": t.exit_time.isoformat() if t.exit_time else None,
+                "entry_price": float(t.entry_price),
+                "exit_price": float(t.exit_price) if t.exit_price else None,
+                "pnl_amount": float(t.pnl_amount) if t.pnl_amount else None,
+                "pnl_pct": float(t.pnl_pct) if t.pnl_pct else None,
+                "entry_reasoning": t.entry_reasoning,
+                "exit_reasoning": t.exit_reasoning,
+                "exit_type": t.exit_type,
+            }
+            for t in trades
+        ],
+        "thoughts": [
+            {
+                "candle_number": th.candle_number,
+                "timestamp": th.timestamp.isoformat() if th.timestamp else None,
+                "decision": th.decision,
+                "reasoning": th.reasoning,
+                "indicator_values": th.indicator_values,
+            }
+            for th in thoughts
+        ],
+    }
+    
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+        zip_file.writestr(
+            "result.json",
+            json.dumps(export_payload["result"], indent=2),
+        )
+        zip_file.writestr(
+            "trades.json",
+            json.dumps(export_payload["trades"], indent=2),
+        )
+        zip_file.writestr(
+            "thoughts.json",
+            json.dumps(export_payload["thoughts"], indent=2),
+        )
+    buffer.seek(0)
+    
+    filename = f"result_{test_result.id}.zip"
+    return StreamingResponse(
+        buffer,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

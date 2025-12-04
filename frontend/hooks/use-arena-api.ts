@@ -1,0 +1,79 @@
+import { useApiClient } from "@/lib/api";
+import { useCallback } from "react";
+
+interface BacktestStartPayload {
+  agent_id: string;
+  asset: string;
+  timeframe: string;
+  date_preset?: string | null;
+  start_date?: string | null;
+  end_date?: string | null;
+  starting_capital: number;
+  playback_speed: string;
+  safety_mode: boolean;
+  allow_leverage: boolean;
+}
+
+interface ForwardStartPayload {
+  agent_id: string;
+  asset: string;
+  timeframe: string;
+  starting_capital: number;
+  safety_mode: boolean;
+  email_notifications: boolean;
+  auto_stop_on_loss: boolean;
+  auto_stop_loss_pct: number;
+  allow_leverage: boolean;
+}
+
+interface BacktestStartResponse {
+  session: {
+    id: string;
+    status: string;
+    agent_id: string;
+    agent_name: string;
+    asset: string;
+    timeframe: string;
+    websocket_url: string;
+  };
+  message: string;
+}
+
+interface ForwardStartResponse {
+  session: {
+    id: string;
+    status: string;
+    agent_id: string;
+    agent_name: string;
+    asset: string;
+    timeframe: string;
+    websocket_url: string;
+  };
+  message: string;
+}
+
+export function useArenaApi() {
+  const { post } = useApiClient();
+
+  const startBacktest = useCallback(
+    async (payload: BacktestStartPayload) => {
+      const response = await post<BacktestStartResponse>("/api/arena/backtest/start", payload);
+      return response.session;
+    },
+    [post]
+  );
+
+  const startForwardTest = useCallback(
+    async (payload: ForwardStartPayload) => {
+      const response = await post<ForwardStartResponse>("/api/arena/forward/start", payload);
+      return response.session;
+    },
+    [post]
+  );
+
+  return {
+    startBacktest,
+    startForwardTest,
+  };
+}
+

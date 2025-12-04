@@ -6,34 +6,10 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import { useForwardSessions } from "@/hooks/use-forward-sessions";
+import { Skeleton } from "@/components/ui/skeleton";
 
-interface LiveSession {
-  id: string;
-  agentName: string;
-  asset: string;
-  duration: string;
-  pnl: number;
-  trades: number;
-  winRate: number;
-  status: "running" | "paused";
-}
-
-// Mock data - in real app would come from API/WebSocket
-const mockLiveSessions: LiveSession[] = [
-  // Empty for now to show the empty state
-  // {
-  //   id: "1",
-  //   agentName: "α-1",
-  //   asset: "BTC/USDT",
-  //   duration: "4h 23m",
-  //   pnl: 2.3,
-  //   trades: 3,
-  //   winRate: 66,
-  //   status: "running",
-  // },
-];
-
-function LiveSessionCard({ session }: { session: LiveSession }) {
+function LiveSessionCard({ session }: { session: ReturnType<typeof useForwardSessions>["sessions"][number] }) {
   return (
     <div className="rounded-lg border border-border/50 bg-card/50 p-4">
       {/* Header */}
@@ -51,27 +27,27 @@ function LiveSessionCard({ session }: { session: LiveSession }) {
       <div className="mb-4 grid grid-cols-2 gap-4">
         <div>
           <p className="text-xs text-muted-foreground">Duration</p>
-          <p className="font-mono text-sm font-medium">{session.duration}</p>
+          <p className="font-mono text-sm font-medium">{session.durationDisplay}</p>
         </div>
         <div>
           <p className="text-xs text-muted-foreground">PnL</p>
           <p
             className={cn(
               "font-mono text-sm font-medium",
-              session.pnl >= 0 ? "text-[hsl(var(--accent-green))]" : "text-[hsl(var(--accent-red))]"
+              session.currentPnlPct >= 0 ? "text-[hsl(var(--accent-green))]" : "text-[hsl(var(--accent-red))]"
             )}
           >
-            {session.pnl >= 0 ? "+" : ""}
-            {session.pnl}%
+            {session.currentPnlPct >= 0 ? "+" : ""}
+            {session.currentPnlPct.toFixed(2)}%
           </p>
         </div>
         <div>
           <p className="text-xs text-muted-foreground">Trades</p>
-          <p className="font-mono text-sm font-medium">{session.trades}</p>
+          <p className="font-mono text-sm font-medium">{session.tradesCount}</p>
         </div>
         <div>
           <p className="text-xs text-muted-foreground">Win Rate</p>
-          <p className="font-mono text-sm font-medium">{session.winRate}%</p>
+          <p className="font-mono text-sm font-medium">{session.winRate.toFixed(1)}%</p>
         </div>
       </div>
 
@@ -83,7 +59,7 @@ function LiveSessionCard({ session }: { session: LiveSession }) {
             <ArrowRight className="h-3 w-3" />
           </Link>
         </Button>
-        <Button variant="ghost" size="sm" className="gap-1">
+        <Button variant="ghost" size="sm" className="gap-1" disabled>
           {session.status === "running" ? (
             <>
               <Pause className="h-3 w-3" />
@@ -126,7 +102,7 @@ function EmptyState() {
 }
 
 export function LiveSessionsPanel() {
-  const sessions = mockLiveSessions;
+  const { sessions, isLoading, error } = useForwardSessions();
 
   return (
     <Card className="border-border/50 bg-card/30">
@@ -134,7 +110,15 @@ export function LiveSessionsPanel() {
         <CardTitle className="font-mono text-lg font-semibold">Live Sessions</CardTitle>
       </CardHeader>
       <CardContent>
-        {sessions.length === 0 ? (
+        {isLoading ? (
+          <div className="space-y-3">
+            {[1, 2].map((key) => (
+              <Skeleton key={key} className="h-36 w-full rounded-lg" />
+            ))}
+          </div>
+        ) : error ? (
+          <div className="text-sm text-destructive">{error}</div>
+        ) : sessions.length === 0 ? (
           <EmptyState />
         ) : (
           <div className="space-y-4">

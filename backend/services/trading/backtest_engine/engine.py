@@ -99,7 +99,8 @@ class BacktestEngine:
         start_date: datetime,
         end_date: datetime,
         starting_capital: float,
-        safety_mode: bool = True
+        safety_mode: bool = True,
+        allow_leverage: bool = False,
     ) -> None:
         """
         Start a backtest session.
@@ -196,7 +197,8 @@ class BacktestEngine:
                 current_index=0,
                 position_manager=position_manager,
                 indicator_calculator=indicator_calculator,
-                ai_trader=ai_trader
+                ai_trader=ai_trader,
+                allow_leverage=allow_leverage,
             )
             
             # Store session state

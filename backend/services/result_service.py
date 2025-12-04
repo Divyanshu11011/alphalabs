@@ -94,6 +94,9 @@ class ResultService:
         profit_factor = self._compute_profit_factor(trades)
         holding_avg_seconds, holding_display = self._compute_average_holding(trades)
         best_trade, worst_trade = self._compute_best_worst_trade(trades)
+        avg_trade_pnl = (
+            pnl_pct / Decimal(len(trades)) if trades and len(trades) > 0 else None
+        )
 
         result = TestResult(
             session_id=session.id,
@@ -122,7 +125,7 @@ class ResultService:
             max_drawdown_pct=Decimal(str(drawdown_pct)) if drawdown_pct is not None else None,
             sharpe_ratio=Decimal(str(sharpe_ratio)) if sharpe_ratio is not None else None,
             profit_factor=Decimal(str(profit_factor)) if profit_factor is not None else None,
-            avg_trade_pnl=(pnl_pct / len(trades)) if trades else None,
+            avg_trade_pnl=avg_trade_pnl,
             best_trade_pnl=Decimal(str(best_trade)) if best_trade is not None else None,
             worst_trade_pnl=Decimal(str(worst_trade)) if worst_trade is not None else None,
             avg_holding_time_seconds=holding_avg_seconds,
@@ -252,8 +255,8 @@ class ResultService:
         for point in curve:
             equity = point.get("value") or starting_capital
             peak = max(peak, equity)
-            dd = (equity - peak) / peak * 100 if peak > 0 else 0
-            max_dd = min(max_dd, dd)
+            dd = ((peak - equity) / peak * 100) if peak > 0 else 0
+            max_dd = max(max_dd, dd)
             computed.append(
                 {
                     "time": point.get("time"),
