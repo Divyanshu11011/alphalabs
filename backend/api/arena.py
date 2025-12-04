@@ -389,6 +389,8 @@ async def start_backtest(
         end_date=end_date,
         starting_capital=Decimal(str(request.starting_capital)),
         playback_speed=request.playback_speed,
+        decision_mode=request.decision_mode,
+        decision_interval_candles=request.decision_interval_candles,
         date_preset=request.date_preset,
         safety_mode=request.safety_mode,
         allow_leverage=request.allow_leverage,
@@ -412,6 +414,8 @@ async def start_backtest(
         starting_capital=request.starting_capital,
         safety_mode=request.safety_mode,
         allow_leverage=request.allow_leverage,
+        decision_mode=request.decision_mode,
+        decision_interval_candles=request.decision_interval_candles,
     )
 
     preview_candles = None
@@ -452,6 +456,8 @@ async def start_backtest(
             websocket_url=_build_ws_url(f"/ws/backtest/{session_id}"),
             date_preset=request.date_preset,
             playback_speed=request.playback_speed,
+            decision_mode=request.decision_mode,
+            decision_interval_candles=request.decision_interval_candles,
             safety_mode=request.safety_mode,
             allow_leverage=request.allow_leverage,
             preview_candles=preview_candles,

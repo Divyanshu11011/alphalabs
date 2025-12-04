@@ -18,12 +18,28 @@ class BacktestStartRequest(BaseModel):
     playback_speed: str = "normal"
     safety_mode: bool = True
     allow_leverage: bool = False
+    decision_mode: str = "every_candle"
+    decision_interval_candles: int = Field(1, ge=1, description="Interval used with every_n_candles")
 
     @validator('date_preset')
     def validate_preset(cls, v):
         allowed = ['7d', '30d', '90d', 'bull', 'crash', 'custom']
         if v and v not in allowed:
             raise ValueError(f"Invalid date_preset. Must be one of {allowed}")
+        return v
+
+    @validator('decision_mode')
+    def validate_decision_mode(cls, v):
+        allowed = ['every_candle', 'every_n_candles']
+        if v not in allowed:
+            raise ValueError(f"Invalid decision_mode. Must be one of {allowed}")
+        return v
+
+    @validator('decision_interval_candles')
+    def validate_decision_interval(cls, v, values):
+        mode = values.get("decision_mode", "every_candle")
+        if mode == "every_n_candles" and v < 1:
+            raise ValueError("decision_interval_candles must be >= 1 when mode is every_n_candles")
         return v
 
 class BacktestSessionResponse(BaseModel):
@@ -37,6 +53,8 @@ class BacktestSessionResponse(BaseModel):
     websocket_url: str
     date_preset: Optional[str] = None
     playback_speed: Optional[str] = None
+    decision_mode: str = "every_candle"
+    decision_interval_candles: int = 1
     safety_mode: bool = True
     allow_leverage: bool = False
     preview_candles: Optional[List[CandleSchema]] = None

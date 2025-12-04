@@ -148,6 +148,20 @@ class TestSession(Base, UUIDMixin, TimestampMixin):
         comment="Playback speed: 'slow', 'normal', 'fast', 'instant'"
     )
     
+    decision_mode: Mapped[str] = mapped_column(
+        String(20),
+        server_default="every_candle",
+        nullable=False,
+        comment="Decision cadence mode for AI intervention"
+    )
+
+    decision_interval_candles: Mapped[int] = mapped_column(
+        Integer,
+        server_default="1",
+        nullable=False,
+        comment="Interval between LLM decisions when using every_n_candles"
+    )
+    
     total_candles: Mapped[Optional[int]] = mapped_column(
         Integer,
         comment="Total number of candles in backtest"

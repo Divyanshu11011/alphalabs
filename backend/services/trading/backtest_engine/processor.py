@@ -171,21 +171,13 @@ class CandleProcessor:
         position_state = session_state.position_manager.get_position()
         equity = session_state.position_manager.get_total_equity()
 
-        # Respect warmup period: don't call the AI until all requested
-        # indicators have enough history. We still broadcast candles and
-        # update positions, but decisions are HOLD until then.
-        if candle_index < session_state.decision_start_index:
-            decision = AIDecision(
-                action="HOLD",
-                reasoning=(
-                    f"Skipping AI decision for candle {candle_index} because "
-                    f"indicators are still warming up (decision_start_index="
-                    f"{session_state.decision_start_index})."
-                ),
-                size_percentage=0.0,
-                leverage=1,
-            )
-        else:
+        # Determine whether this candle should trigger an AI decision
+        should_run_ai = (
+            candle_index >= session_state.decision_start_index
+            and self._is_decision_candle(session_state, candle_index)
+        )
+
+        if should_run_ai:
             # Broadcast AI thinking event
             await self.broadcaster.broadcast_ai_thinking(session_id)
 
@@ -194,6 +186,23 @@ class CandleProcessor:
                 indicators=indicators,
                 position_state=position_state,
                 equity=equity,
+            )
+        else:
+            if candle_index < session_state.decision_start_index:
+                reasoning = (
+                    f"Skipping AI decision for candle {candle_index} because "
+                    f"indicators are still warming up (decision_start_index="
+                    f"{session_state.decision_start_index})."
+                )
+            else:
+                reasoning = (
+                    f"Decision cadence ({session_state.decision_mode}) skipped candle {candle_index}"
+                )
+            decision = AIDecision(
+                action="HOLD",
+                reasoning=reasoning,
+                size_percentage=0.0,
+                leverage=1,
             )
         
         # Store AI thought
@@ -376,6 +385,16 @@ class CandleProcessor:
             "leverage": position.leverage,
             "unrealized_pnl": position.unrealized_pnl,
         }
+
+    def _is_decision_candle(self, session_state: Any, candle_index: int) -> bool:
+        mode = getattr(session_state, "decision_mode", "every_candle")
+        if mode == "every_candle":
+            return True
+        if mode == "every_n_candles":
+            interval = getattr(session_state, "decision_interval_candles", 1) or 1
+            elapsed = max(0, candle_index - session_state.decision_start_index)
+            return elapsed % interval == 0
+        return True
 
     def _compute_elapsed_seconds(self, session_state: Any) -> int:
         if not session_state.started_at:

@@ -103,6 +103,9 @@ class BacktestEngine:
         starting_capital: float,
         safety_mode: bool = True,
         allow_leverage: bool = False,
+        playback_speed: str = "normal",
+        decision_mode: str = "every_candle",
+        decision_interval_candles: int = 1,
     ) -> None:
         """
         Start a backtest session.
@@ -214,15 +217,6 @@ class BacktestEngine:
             # (after all requested indicators have enough history).
             decision_start_index = IndicatorCalculator.compute_min_history(agent.indicators)
             
-            # Load playback speed from session
-            async with self.session_factory() as db:
-                from models.arena import TestSession
-                session_result = await db.execute(
-                    select(TestSession).where(TestSession.id == session_id)
-                )
-                session_record = session_result.scalar_one_or_none()
-                playback_speed = session_record.playback_speed if session_record and session_record.playback_speed else "normal"
-            
             # Create session state
             session_state = SessionState(
                 session_id=session_id,
@@ -235,6 +229,8 @@ class BacktestEngine:
                 decision_start_index=decision_start_index,
                 allow_leverage=allow_leverage,
                 playback_speed=playback_speed,
+                decision_mode=decision_mode,
+                decision_interval_candles=decision_interval_candles,
             )
             
             # Store session state
@@ -604,7 +600,8 @@ class BacktestEngine:
         # Broadcast session completed event
         await self.broadcaster.broadcast_session_completed(
             session_id=session_id,
-            result_id=result_id,
+            # Cast to string so it can be JSON-serialized for WebSocket clients
+            result_id=str(result_id),
             final_equity=stats["current_equity"],
             total_pnl=stats["total_pnl"],
             total_pnl_pct=stats["total_pnl_pct"],

@@ -63,6 +63,9 @@ class SessionState:
     # engine will attempt to fill this when price reaches the requested
     # entry_price on subsequent candles.
     pending_order: Optional[Dict[str, Any]] = None
+    playback_speed: str = "normal"
+    decision_mode: str = "every_candle"
+    decision_interval_candles: int = 1
     # Playback speed: 'slow' (1000ms), 'normal' (500ms), 'fast' (200ms), 'instant' (0ms)
     playback_speed: str = "normal"
     
