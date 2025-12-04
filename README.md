@@ -177,4 +177,6 @@ Make sure to set your `OPENROUTER_API_KEY` in the backend `.env` file.
 
 ## License
 
-Private project
+This project is licensed under the GNU Affero General Public License v3.0 (AGPL-3.0) - see the [LICENSE](LICENSE) file for details.
+
+**Important:** This license requires that if you use this software as a service (SaaS), you must make the source code available to your users. This is the most restrictive OSI-approved license available.
