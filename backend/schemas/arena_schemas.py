@@ -72,6 +72,9 @@ class OpenPosition(BaseModel):
 class BacktestStatusResponse(BaseModel):
     id: UUID
     status: str
+    agent_id: Optional[UUID] = None
+    agent_name: Optional[str] = None
+    asset: Optional[str] = None
     current_candle: int
     total_candles: int
     progress_pct: float

@@ -79,8 +79,9 @@ export function BattleScreen({ sessionId }: BattleScreenProps) {
     current_pnl_pct: number;
     trades_count: number;
     win_rate: number;
-    agent_id?: string;
-    asset?: string;
+    agent_id?: string | null;
+    agent_name?: string | null;
+    asset?: string | null;
   } | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -102,7 +103,7 @@ export function BattleScreen({ sessionId }: BattleScreenProps) {
     totalCandles: 0,
   };
   
-  // Find the selected agent
+  // Find the selected agent from store
   const agent = useMemo(() => {
     const agentId = sessionStatus?.agent_id || backtestConfig?.agentId;
     if (agentId) {
@@ -110,6 +111,9 @@ export function BattleScreen({ sessionId }: BattleScreenProps) {
     }
     return null;
   }, [sessionStatus?.agent_id, backtestConfig?.agentId, agents]);
+
+  // Get agent name - use from store if available, otherwise from API response
+  const agentName = agent?.name || sessionStatus?.agent_name || "Unknown Agent";
   
   // Use data from Zustand store instead of local state
   const candles = currentSessionData.candles;
@@ -585,12 +589,30 @@ export function BattleScreen({ sessionId }: BattleScreenProps) {
     );
   }
 
-  if (!agent) {
+  // If still loading or no sessionStatus yet, show loading
+  if (isLoading || !sessionStatus) {
     return (
       <div className="flex items-center justify-center min-h-[calc(100vh-120px)]">
         <Card className="border-border/50 bg-card/30">
           <CardContent className="p-8 text-center">
-            <p className="text-sm text-muted-foreground">Agent not found</p>
+            <div className="flex flex-col items-center gap-4">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+              <p className="text-sm text-muted-foreground">Loading session data...</p>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  // Only show "agent not found" if we have no agent info at all (neither from store nor API)
+  // This allows viewing old sessions even if agent is archived/deleted
+  if (!sessionStatus?.agent_id && !sessionStatus?.agent_name && !backtestConfig?.agentId) {
+    return (
+      <div className="flex items-center justify-center min-h-[calc(100vh-120px)]">
+        <Card className="border-border/50 bg-card/30">
+          <CardContent className="p-8 text-center">
+            <p className="text-sm text-muted-foreground">Session data not available</p>
             <Button variant="outline" size="sm" onClick={() => router.push("/dashboard/arena/backtest")} className="mt-4">
               Back to Arena
             </Button>
@@ -658,7 +680,12 @@ export function BattleScreen({ sessionId }: BattleScreenProps) {
           >
             <ChevronLeft className="h-4 w-4" />
           </Link>
-          <span className="font-mono text-xs sm:text-sm font-medium">{agent.name}</span>
+          <span className="font-mono text-xs sm:text-sm font-medium">{agentName}</span>
+          {!agent && sessionStatus?.agent_name && (
+            <Badge variant="outline" className="text-[10px] h-5">
+              Archived
+            </Badge>
+          )}
           <span className="text-[10px] sm:text-xs text-muted-foreground hidden xs:inline">
             {asset.toUpperCase().replace("-", "/")}
           </span>

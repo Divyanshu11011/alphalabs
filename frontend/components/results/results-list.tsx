@@ -255,7 +255,7 @@ export function ResultsList() {
           <CardContent className="p-4">
             <p className="text-sm text-muted-foreground">Avg PnL</p>
             <p className="mt-1 font-mono text-2xl font-bold text-[hsl(var(--accent-green))]">
-              +{stats.avgPnL}%
+              {stats.avgPnL >= 0 ? "+" : ""}{stats.avgPnL.toFixed(2)}%
             </p>
           </CardContent>
         </Card>

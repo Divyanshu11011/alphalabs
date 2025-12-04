@@ -82,6 +82,9 @@ interface BacktestStatusResponse {
   session: {
     id: string;
     status: string;
+    agent_id?: string | null;
+    agent_name?: string | null;
+    asset?: string | null;
     current_candle: number;
     total_candles: number;
     progress_pct: number;

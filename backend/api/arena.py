@@ -511,6 +511,9 @@ async def get_backtest_status(
             "session": {
                 "id": id,
                 "status": "running" if not session_state.is_paused else "paused",
+                "agent_id": session_state.agent.id,
+                "agent_name": session_state.agent.name,
+                "asset": session_state.agent.asset if hasattr(session_state, 'asset') else None,
                 "current_candle": session_state.current_index,
                 "total_candles": len(session_state.candles),
                 "progress_pct": progress_pct,
@@ -526,7 +529,9 @@ async def get_backtest_status(
     
     # If not active, fetch from DB
     result = await db.execute(
-        select(TestSession).where(TestSession.id == id, TestSession.user_id == current_user.id)
+        select(TestSession)
+        .options(selectinload(TestSession.agent))
+        .where(TestSession.id == id, TestSession.user_id == current_user.id)
     )
     session = result.scalar_one_or_none()
     
@@ -563,10 +568,21 @@ async def get_backtest_status(
     if not elapsed_seconds and session.started_at and session.completed_at:
         elapsed_seconds = int((session.completed_at - session.started_at).total_seconds())
     
+    # Get agent info if available
+    agent_id = None
+    agent_name = None
+    if session.agent_id:
+        agent_id = session.agent_id
+        if session.agent:
+            agent_name = session.agent.name
+    
     return {
         "session": {
             "id": session.id,
             "status": session.status,
+            "agent_id": agent_id,
+            "agent_name": agent_name,
+            "asset": session.asset,
             "current_candle": session.current_candle or 0,
             "total_candles": session.total_candles or 0,
             "progress_pct": progress_pct,
