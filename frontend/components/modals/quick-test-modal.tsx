@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Zap, Bot, History, Play } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
@@ -22,14 +22,26 @@ import {
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
-import { useAgentsStore } from "@/lib/stores";
+import { useAgents } from "@/hooks/use-agents";
+import { useAgentsStore } from "@/lib/stores/agents-store";
 import type { QuickTestModalProps } from "@/types/dashboard";
 
 export function QuickTestModal({ open, onOpenChange }: QuickTestModalProps) {
   const router = useRouter();
   const { agents } = useAgentsStore();
+  const {
+    isLoading: agentsLoading,
+    error: agentsError,
+    refetch: refetchAgents,
+  } = useAgents();
   const [selectedAgent, setSelectedAgent] = useState<string>("");
   const [testType, setTestType] = useState<"backtest" | "forward">("backtest");
+
+  useEffect(() => {
+    if (!selectedAgent && agents.length > 0) {
+      setSelectedAgent(agents[0].id);
+    }
+  }, [agents, selectedAgent]);
 
   const agent = agents.find((a) => a.id === selectedAgent);
   const canForwardTest = agent && (agent.stats.profitableTests ?? 0) > 0;
@@ -78,7 +90,22 @@ export function QuickTestModal({ open, onOpenChange }: QuickTestModalProps) {
                 <AnimatedSelectValue placeholder="Choose an agent..." />
               </AnimatedSelectTrigger>
               <AnimatedSelectContent>
-                {agents.length === 0 ? (
+                {agentsLoading ? (
+                  <div className="p-4 text-center text-sm text-muted-foreground">
+                    Loading agents...
+                  </div>
+                ) : agentsError ? (
+                  <div className="p-4 text-center text-sm text-destructive">
+                    Failed to load agents.
+                    <Button
+                      variant="link"
+                      className="mt-2 text-xs"
+                      onClick={() => void refetchAgents()}
+                    >
+                      Retry
+                    </Button>
+                  </div>
+                ) : agents.length === 0 ? (
                   <div className="p-4 text-center text-sm text-muted-foreground">
                     No agents yet. Create one first!
                   </div>

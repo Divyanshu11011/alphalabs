@@ -2,6 +2,7 @@
 
 import { useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "motion/react";
+import { useRouter } from "next/navigation";
 import confetti from "canvas-confetti";
 import {
   DynamicIsland,
@@ -11,6 +12,8 @@ import {
 import {
   useDynamicIslandStore,
   type CelebrationData,
+  type AnalyzingData,
+  type LiveSessionData,
 } from "@/lib/stores/dynamic-island-store";
 import { cn } from "@/lib/utils";
 import { MODE_TO_SIZE, isExpandedSize } from "./constants";
@@ -77,6 +80,7 @@ const GlobalDynamicIslandInner = ({
   renderLiveSession,
 }: GlobalDynamicIslandProps) => {
   const { mode, data, isVisible } = useDynamicIslandStore();
+  const router = useRouter();
   
   // Fire confetti on celebration
   const fireConfetti = useCallback(() => {
@@ -100,6 +104,28 @@ const GlobalDynamicIslandInner = ({
     }
   }, [mode, fireConfetti]);
   
+  // Handle click to redirect to active session
+  const handleClick = useCallback(() => {
+    if (mode === "analyzing" && data) {
+      const analyzingData = data as AnalyzingData;
+      if (analyzingData.sessionId && analyzingData.sessionType) {
+        const path = `/dashboard/arena/${analyzingData.sessionType}/${analyzingData.sessionId}`;
+        router.push(path);
+      }
+    } else if (mode === "liveSession" && data) {
+      const liveSessionData = data as LiveSessionData;
+      if (liveSessionData.sessionId && liveSessionData.sessionType) {
+        const path = `/dashboard/arena/${liveSessionData.sessionType}/${liveSessionData.sessionId}`;
+        router.push(path);
+      }
+    }
+  }, [mode, data, router]);
+  
+  // Determine if clickable - only show pointer when redirect is actually available
+  const isClickable = 
+    (mode === "analyzing" && data && (data as AnalyzingData).sessionId && (data as AnalyzingData).sessionType) ||
+    (mode === "liveSession" && data && (data as LiveSessionData).sessionId && (data as LiveSessionData).sessionType);
+  
   return (
     <div
       className={cn(
@@ -116,6 +142,10 @@ const GlobalDynamicIslandInner = ({
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: -10, scale: 0.95 }}
             transition={{ type: "spring", stiffness: 300, damping: 25 }}
+            onClick={isClickable ? handleClick : undefined}
+            className={cn(
+              isClickable && "cursor-pointer"
+            )}
           >
             <DynamicIsland id="global-dynamic-island">
               <IslandSizeController mode={mode} />

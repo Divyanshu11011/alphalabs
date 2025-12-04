@@ -24,13 +24,15 @@ Usage:
     )
 """
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from dateutil import parser
 from decimal import Decimal
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 import hashlib
 import logging
 from functools import lru_cache
 
+import httpx
 from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 import yfinance as yf
@@ -82,20 +84,155 @@ class MarketDataService:
             )
     """
     
-    # Supported assets and their yfinance ticker mappings
+    # Supported assets and their provider metadata
+    ASSET_CATALOG: Dict[str, Dict[str, Any]] = {
+        'BTC/USDT': {
+            'ticker': 'BTC-USD',
+            'binance_symbol': 'BTCUSDT',
+            'name': 'Bitcoin',
+            'icon': '₿',
+            'available': True,
+            'min_lookback_days': 7,
+            'max_lookback_days': 720,
+            'sources': ['binance', 'yfinance'],
+        },
+        'ETH/USDT': {
+            'ticker': 'ETH-USD',
+            'binance_symbol': 'ETHUSDT',
+            'name': 'Ethereum',
+            'icon': 'Ξ',
+            'available': True,
+            'min_lookback_days': 7,
+            'max_lookback_days': 720,
+            'sources': ['binance', 'yfinance'],
+        },
+        'SOL/USDT': {
+            'name': 'Solana',
+            'icon': '◎',
+            'available': True,
+            'min_lookback_days': 7,
+            'max_lookback_days': 365,
+            'sources': ['binance', 'yfinance'],
+            'ticker': 'SOL-USD',
+            'binance_symbol': 'SOLUSDT',
+        },
+        'XRP/USDT': {
+            'name': 'XRP',
+            'icon': '✕',
+            'available': True,
+            'min_lookback_days': 7,
+            'max_lookback_days': 365,
+            'sources': ['binance', 'yfinance'],
+            'ticker': 'XRP-USD',
+            'binance_symbol': 'XRPUSDT',
+        },
+        'ADA/USDT': {
+            'name': 'Cardano',
+            'icon': '₳',
+            'available': True,
+            'min_lookback_days': 7,
+            'max_lookback_days': 365,
+            'sources': ['binance', 'yfinance'],
+            'ticker': 'ADA-USD',
+            'binance_symbol': 'ADAUSDT',
+        },
+        'DOGE/USDT': {
+            'name': 'Dogecoin',
+            'icon': 'Ð',
+            'available': True,
+            'min_lookback_days': 7,
+            'max_lookback_days': 365,
+            'sources': ['binance', 'yfinance'],
+            'ticker': 'DOGE-USD',
+            'binance_symbol': 'DOGEUSDT',
+        },
+        'BNB/USDT': {
+            'ticker': 'BNB-USD',
+            'binance_symbol': 'BNBUSDT',
+            'name': 'Binance Coin',
+            'icon': 'Ɓ',
+            'available': True,
+            'min_lookback_days': 7,
+            'max_lookback_days': 365,
+            'sources': ['binance', 'yfinance'],
+        },
+    }
     ASSET_TICKER_MAP = {
-        'BTC/USDT': 'BTC-USD',
-        'ETH/USDT': 'ETH-USD',
-        'SOL/USDT': 'SOL-USD',
+        asset: meta['ticker']
+        for asset, meta in ASSET_CATALOG.items()
+        if meta.get('ticker')
+    }
+    ASSET_BINANCE_MAP = {
+        asset: meta['binance_symbol']
+        for asset, meta in ASSET_CATALOG.items()
+        if meta.get('binance_symbol')
     }
     
-    # Supported timeframes and their yfinance interval mappings
-    TIMEFRAME_INTERVAL_MAP = {
-        '15m': '15m',
-        '1h': '1h',
-        '4h': '4h',
-        '1d': '1d',
+    TIMEFRAME_CATALOG: Dict[str, Dict[str, Any]] = {
+        '15m': {'interval': '15m', 'name': '15 Minutes', 'minutes': 15},
+        '1h': {'interval': '1h', 'name': '1 Hour', 'minutes': 60},
+        '4h': {'interval': '4h', 'name': '4 Hours', 'minutes': 240},
+        '1d': {'interval': '1d', 'name': '1 Day', 'minutes': 1440},
     }
+    TIMEFRAME_INTERVAL_MAP = {k: v['interval'] for k, v in TIMEFRAME_CATALOG.items()}
+    
+    DATE_PRESETS: List[Dict[str, Any]] = [
+        {"id": "7d", "name": "Last 7 days", "description": "Most recent week", "days": 7},
+        {"id": "30d", "name": "Last 30 days", "description": "Most recent month", "days": 30},
+        {"id": "90d", "name": "Last 90 days", "description": "Most recent quarter", "days": 90},
+        {"id": "bull", "name": "Bull Run", "description": "Oct 2023 - Mar 2024", "start_date": "2023-10-01", "end_date": "2024-03-31"},
+        {"id": "crash", "name": "Crash Recovery", "description": "Nov 2022 - Jan 2023", "start_date": "2022-11-01", "end_date": "2023-01-31"},
+    ]
+    
+    PLAYBACK_SPEEDS: List[Dict[str, Any]] = [
+        {"id": "slow", "name": "Slow (1s/candle)", "ms": 1000},
+        {"id": "normal", "name": "Normal (500ms/candle)", "ms": 500},
+        {"id": "fast", "name": "Fast (200ms/candle)", "ms": 200},
+        {"id": "instant", "name": "Instant", "ms": 0},
+    ]
+    
+    INDICATOR_CATEGORIES: List[Dict[str, Any]] = [
+        {
+            "id": "momentum",
+            "name": "Momentum",
+            "indicators": [
+                {"id": "rsi", "name": "RSI (Relative Strength Index)", "description": "Measures overbought/oversold conditions"},
+                {"id": "stoch", "name": "Stochastic Oscillator", "description": "Compares close to price range"},
+                {"id": "cci", "name": "CCI (Commodity Channel Index)", "description": "Identifies cyclical trends"},
+                {"id": "mom", "name": "Momentum", "description": "Rate of price change"},
+                {"id": "ao", "name": "AO (Awesome Oscillator)", "description": "Market momentum measurement"},
+            ],
+        },
+        {
+            "id": "trend",
+            "name": "Trend",
+            "indicators": [
+                {"id": "macd", "name": "MACD", "description": "Trend-following momentum indicator"},
+                {"id": "ema", "name": "EMA (Exponential Moving Average)", "description": "Smoothed average weighting recent prices"},
+                {"id": "sma", "name": "SMA (Simple Moving Average)", "description": "Average price over period"},
+                {"id": "adx", "name": "ADX (Average Directional Index)", "description": "Measures trend strength"},
+                {"id": "psar", "name": "Parabolic SAR", "description": "Highlights potential reversals"},
+            ],
+        },
+        {
+            "id": "volatility",
+            "name": "Volatility",
+            "indicators": [
+                {"id": "atr", "name": "ATR (Average True Range)", "description": "Measures market volatility"},
+                {"id": "bb", "name": "Bollinger Bands", "description": "Volatility-based envelopes"},
+                {"id": "kc", "name": "Keltner Channels", "description": "Volatility-based channels"},
+            ],
+        },
+        {
+            "id": "volume",
+            "name": "Volume",
+            "indicators": [
+                {"id": "volume", "name": "Volume", "description": "Total traded amount"},
+                {"id": "obv", "name": "OBV (On-Balance Volume)", "description": "Tracks buying/selling pressure"},
+                {"id": "vwap", "name": "VWAP", "description": "Volume weighted average price"},
+            ],
+        },
+    ]
     
     def __init__(self, db: AsyncSession):
         """
@@ -192,7 +329,7 @@ class MarketDataService:
             )
         
         # Validate date range is not too far in the future
-        if start_date > datetime.now():
+        if start_date > datetime.now(timezone.utc):
             raise ValueError(
                 f"start_date ({start_date}) cannot be in the future"
             )
@@ -309,58 +446,192 @@ class MarketDataService:
             # No cache available, re-raise exception
             raise
     
+    async def get_current_price(self, asset: str) -> Optional[Dict[str, float]]:
+        """
+        Get the current real-time price for an asset from Binance API.
+        
+        Uses Binance REST API for live market data.
+        
+        Args:
+            asset: Trading asset (e.g., 'BTC/USDT')
+            
+        Returns:
+            Dict with current price data: {
+                'price': float,
+                'high_24h': float,
+                'low_24h': float,
+                'volume_24h': float,
+                'change_24h': float,
+                'change_pct_24h': float
+            } or None if unavailable
+        """
+        # Get Binance symbol (e.g., BTC/USDT -> BTCUSDT)
+        asset_info = self.ASSET_CATALOG.get(asset.upper())
+        if not asset_info:
+            logger.warning(f"Unknown asset: {asset}")
+            return None
+        
+        binance_symbol = asset_info.get('binance_symbol')
+        if not binance_symbol:
+            logger.warning(f"No Binance symbol for {asset}")
+            return None
+        
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                # Binance 24hr ticker endpoint
+                response = await client.get(
+                    "https://api.binance.com/api/v3/ticker/24hr",
+                    params={"symbol": binance_symbol}
+                )
+                response.raise_for_status()
+                data = response.json()
+                
+                # Log the full ticker response for debugging
+                logger.info(
+                    f"Binance ticker response for {asset} ({binance_symbol}): {data}"
+                )
+                
+                current_price = float(data.get("lastPrice", 0))
+                if current_price == 0:
+                    raise ValueError("Invalid price from Binance")
+                
+                high_24h = float(data.get("highPrice", current_price))
+                low_24h = float(data.get("lowPrice", current_price))
+                volume_24h = float(data.get("volume", 0))
+                price_change = float(data.get("priceChange", 0))
+                price_change_pct = float(data.get("priceChangePercent", 0))
+                
+                return {
+                    'price': current_price,
+                    'high_24h': high_24h,
+                    'low_24h': low_24h,
+                    'volume_24h': volume_24h,
+                    'change_24h': price_change,
+                    'change_pct_24h': price_change_pct,
+                }
+        except Exception as e:
+            logger.error(f"Error fetching current price from Binance for {asset}: {e}")
+            return None
+    
+    async def get_historical_candles_binance(
+        self,
+        asset: str,
+        timeframe: str,
+        limit: int = 500
+    ) -> List[Candle]:
+        """
+        Fetch historical candles from Binance API.
+        
+        Args:
+            asset: Trading asset (e.g., 'BTC/USDT')
+            timeframe: Timeframe (e.g., '1h', '15m', '1d')
+            limit: Number of candles to fetch (max 1000, default: 500)
+            
+        Returns:
+            List of Candle objects sorted by timestamp (oldest first)
+        """
+        # Get Binance symbol and interval
+        asset_info = self.ASSET_CATALOG.get(asset.upper())
+        if not asset_info:
+            logger.warning(f"Unknown asset: {asset}")
+            return []
+        
+        binance_symbol = asset_info.get('binance_symbol')
+        if not binance_symbol:
+            logger.warning(f"No Binance symbol for {asset}")
+            return []
+        
+        # Map timeframe to Binance interval
+        interval_map = {
+            '1m': '1m', '3m': '3m', '5m': '5m', '15m': '15m', '30m': '30m',
+            '1h': '1h', '2h': '2h', '4h': '4h', '6h': '6h', '8h': '8h', '12h': '12h',
+            '1d': '1d', '3d': '3d', '1w': '1w', '1M': '1M'
+        }
+        binance_interval = interval_map.get(timeframe.lower(), '1h')
+        
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                # Binance klines endpoint
+                response = await client.get(
+                    "https://api.binance.com/api/v3/klines",
+                    params={
+                        "symbol": binance_symbol,
+                        "interval": binance_interval,
+                        "limit": min(limit, 1000)  # Binance max is 1000
+                    }
+                )
+                response.raise_for_status()
+                klines = response.json()
+                
+                if not klines:
+                    logger.warning(f"No historical data from Binance for {asset}")
+                    return []
+                
+                # Convert Binance klines to Candle objects
+                # Binance format: [open_time, open, high, low, close, volume, close_time, ...]
+                candles = []
+                for kline in klines:
+                    try:
+                        open_time_ms = int(kline[0])
+                        timestamp = datetime.fromtimestamp(open_time_ms / 1000, tz=timezone.utc)
+                        
+                        candle = Candle(
+                            timestamp=timestamp,
+                            open=float(kline[1]),
+                            high=float(kline[2]),
+                            low=float(kline[3]),
+                            close=float(kline[4]),
+                            volume=float(kline[5])
+                        )
+                        candles.append(candle)
+                    except Exception as e:
+                        logger.debug(f"Error parsing Binance kline: {e}")
+                        continue
+                
+                # Sort by timestamp (oldest first) - Binance already returns sorted, but just in case
+                candles.sort(key=lambda c: c.timestamp)
+                
+                logger.info(f"Fetched {len(candles)} historical candles from Binance for {asset} {timeframe}")
+                return candles
+                
+        except Exception as e:
+            logger.error(f"Error fetching historical data from Binance for {asset}: {e}")
+            return []
+    
     async def get_latest_candle(
         self,
         asset: str,
         timeframe: str
-    ) -> Candle:
+    ) -> Optional[Candle]:
         """
-        Get the most recent closed candle.
+        Get the most recent closed candle using Binance API.
         
-        Fetches the latest completed candlestick for the specified
-        asset and timeframe. Used for forward testing to get real-time data.
+        For forward testing, fetches the latest closed candle from Binance.
         
         Args:
             asset: Trading asset (e.g., 'BTC/USDT')
             timeframe: Candlestick timeframe (e.g., '1h')
             
         Returns:
-            Candle: Most recent closed candle
-            
-        Raises:
-            ValueError: If parameters are invalid
-            Exception: If data fetch fails
-            
-        Example:
-            latest = await service.get_latest_candle("BTC/USDT", "1h")
-            print(f"Latest BTC price: ${latest.close:,.2f}")
+            Candle: Most recent closed candle or None
         """
-        # Validate parameters
-        if asset not in self.ASSET_TICKER_MAP:
-            supported = ', '.join(self.ASSET_TICKER_MAP.keys())
-            raise ValueError(
-                f"Unsupported asset '{asset}'. Supported: {supported}"
+        try:
+            # Fetch last 2 candles from Binance to ensure we get a closed one
+            candles = await self.get_historical_candles_binance(
+                asset,
+                timeframe,
+                limit=2
             )
-        
-        if timeframe not in self.TIMEFRAME_INTERVAL_MAP:
-            supported = ', '.join(self.TIMEFRAME_INTERVAL_MAP.keys())
-            raise ValueError(
-                f"Unsupported timeframe '{timeframe}'. Supported: {supported}"
-            )
-        
-        # Fetch recent data (last 2 candles to ensure we get a closed one)
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=2)  # Get enough data
-        
-        candles = await self.get_historical_data(
-            asset, timeframe, start_date, end_date
-        )
-        
-        if not candles:
-            raise Exception(f"No data available for {asset} {timeframe}")
-        
-        # Return the most recent candle
-        return candles[-1]
+            
+            if not candles or len(candles) == 0:
+                logger.warning(f"No candles available for {asset} {timeframe}")
+                return None
+            
+            # Return the most recent (last) candle
+            return candles[-1]
+        except Exception as e:
+            logger.error(f"Error getting latest candle from Binance for {asset}: {e}")
+            return None
     
     async def _load_from_db_cache(
         self,
@@ -436,6 +707,12 @@ class MarketDataService:
         except Exception as e:
             logger.error(f"Error loading from database cache: {e}")
             return None
+    BINANCE_INTERVAL_MS: Dict[str, int] = {
+        '15m': 15 * 60 * 1000,
+        '1h': 60 * 60 * 1000,
+        '4h': 4 * 60 * 60 * 1000,
+        '1d': 24 * 60 * 60 * 1000,
+    }
     
     def _estimate_candle_count(
         self,
@@ -477,111 +754,273 @@ class MarketDataService:
         end_date: datetime
     ) -> List[Candle]:
         """
-        Fetch candlestick data from external API (yfinance).
+        Fetch candlestick data from external providers with fallbacks.
         
-        Uses yfinance library to fetch historical OHLCV data.
-        Converts yfinance DataFrame format to our Candle objects.
-        Includes rate limit handling and timeout protection.
-        
-        Args:
-            asset: Trading asset (e.g., 'BTC/USDT')
-            timeframe: Candlestick timeframe (e.g., '1h')
-            start_date: Start of date range
-            end_date: End of date range
-            
-        Returns:
-            List[Candle]: Fetched candles
-            
-        Raises:
-            Exception: If API fetch fails or rate limit exceeded
-            
-        Example:
-            candles = await service._fetch_from_api(
-                "BTC/USDT", "1h",
-                datetime(2024, 1, 1),
-                datetime(2024, 3, 31)
-            )
+        For crypto assets, tries FreeCryptoAPI first (free, real-time).
+        Falls back to Binance REST API, then yfinance.
         """
-        # Map to yfinance ticker and interval
-        ticker_symbol = self.ASSET_TICKER_MAP[asset]
-        interval = self.TIMEFRAME_INTERVAL_MAP[timeframe]
+        metadata = self.ASSET_CATALOG.get(asset, {})
         
+        # Check if it's a crypto asset (has /USDT or /USD)
+        is_crypto = '/' in asset and asset.split('/')[1] in ['USDT', 'USD', 'BTC', 'ETH']
+        
+        # For crypto, try FreeCryptoAPI first (only for daily timeframe)
+        if is_crypto and timeframe == '1d':
+            try:
+                return await self._fetch_from_freecryptoapi(asset, timeframe, start_date, end_date)
+            except Exception as exc:
+                logger.warning(
+                    f"FreeCryptoAPI failed for {asset} {timeframe}: {exc}, trying fallback"
+                )
+        
+        # Fallback to configured sources
+        preferred_sources = metadata.get('sources', ['yfinance'])
+        last_error: Optional[Exception] = None
+        
+        for source in preferred_sources:
+            try:
+                if source == 'binance':
+                    return await self._fetch_from_binance(asset, timeframe, start_date, end_date)
+                if source == 'yfinance':
+                    return await self._fetch_from_yfinance(asset, timeframe, start_date, end_date)
+            except Exception as exc:
+                last_error = exc
+                logger.warning(
+                    "Market data provider %s failed for %s %s: %s",
+                    source,
+                    asset,
+                    timeframe,
+                    exc
+                )
+        
+        if last_error:
+            raise Exception(f"Failed to fetch data for {asset} {timeframe}: {last_error}")
+        
+        raise Exception(f"No configured data sources for {asset}")
+    
+    async def _fetch_from_yfinance(
+        self,
+        asset: str,
+        timeframe: str,
+        start_date: datetime,
+        end_date: datetime
+    ) -> List[Candle]:
+        ticker_symbol = self.ASSET_TICKER_MAP.get(asset)
+        if not ticker_symbol:
+            raise Exception(f"No yfinance ticker configured for {asset}")
+        
+        interval = self.TIMEFRAME_INTERVAL_MAP[timeframe]
         logger.info(
-            f"Fetching from yfinance: {ticker_symbol} "
-            f"interval={interval} from {start_date.date()} to {end_date.date()}"
+            "Fetching from yfinance: %s interval=%s from %s to %s",
+            ticker_symbol,
+            interval,
+            start_date.date(),
+            end_date.date()
         )
         
+        import asyncio
+        loop = asyncio.get_event_loop()
+        
+        def fetch_sync():
+            ticker = yf.Ticker(ticker_symbol)
+            return ticker.history(
+                start=start_date,
+                end=end_date,
+                interval=interval,
+                auto_adjust=True,
+                actions=False
+            )
+        
         try:
-            # Fetch data from yfinance (runs in thread pool to avoid blocking)
-            import asyncio
-            loop = asyncio.get_event_loop()
-            
-            def fetch_sync():
-                ticker = yf.Ticker(ticker_symbol)
-                return ticker.history(
-                    start=start_date,
-                    end=end_date,
-                    interval=interval,
-                    auto_adjust=True,  # Adjust for splits/dividends
-                    actions=False  # Don't include dividend/split actions
-                )
-            
-            # Run with timeout to prevent hanging
             df = await asyncio.wait_for(
                 loop.run_in_executor(None, fetch_sync),
                 timeout=settings.MARKET_DATA_TIMEOUT
             )
+        except asyncio.TimeoutError:
+            raise Exception(
+                f"Market data fetch timed out after {settings.MARKET_DATA_TIMEOUT}s"
+            )
+        
+        if df.empty:
+            raise Exception(
+                f"No data returned from yfinance for {ticker_symbol} "
+                f"{interval} from {start_date.date()} to {end_date.date()}"
+            )
+        
+        candles: List[Candle] = []
+        for index, row in df.iterrows():
+            timestamp = index.to_pydatetime()
+            if timestamp.tzinfo is not None:
+                timestamp = timestamp.replace(tzinfo=None)
             
-            if df.empty:
-                raise Exception(
-                    f"No data returned from yfinance for {ticker_symbol} "
-                    f"{interval} from {start_date.date()} to {end_date.date()}"
-                )
-            
-            # Convert DataFrame to Candle objects
-            candles = []
-            for index, row in df.iterrows():
-                # Handle timezone-aware datetime
-                timestamp = index.to_pydatetime()
-                if timestamp.tzinfo is not None:
-                    timestamp = timestamp.replace(tzinfo=None)
-                
-                candle = Candle(
+            candles.append(
+                Candle(
                     timestamp=timestamp,
                     open=float(row['Open']),
                     high=float(row['High']),
                     low=float(row['Low']),
                     close=float(row['Close']),
-                    volume=float(row['Volume'])
+                    volume=float(row['Volume']),
                 )
-                candles.append(candle)
-            
-            logger.info(
-                f"Successfully fetched {len(candles)} candles from yfinance"
             )
-            
-            return candles
-            
-        except asyncio.TimeoutError:
-            logger.error(
-                f"yfinance API timeout after {settings.MARKET_DATA_TIMEOUT}s "
-                f"for {ticker_symbol}"
-            )
+        
+        logger.info(
+            "Successfully fetched %s candles from yfinance", len(candles)
+        )
+        return candles
+    
+    async def _fetch_from_binance(
+        self,
+        asset: str,
+        timeframe: str,
+        start_date: datetime,
+        end_date: datetime
+    ) -> List[Candle]:
+        symbol = self.ASSET_BINANCE_MAP.get(asset)
+        if not symbol:
+            raise Exception(f"No Binance symbol configured for {asset}")
+        
+        interval = self.TIMEFRAME_INTERVAL_MAP[timeframe]
+        interval_ms = self.BINANCE_INTERVAL_MS[timeframe]
+        logger.info(
+            "Fetching from Binance: %s interval=%s from %s to %s",
+            symbol,
+            interval,
+            start_date.date(),
+            end_date.date()
+        )
+        
+        start_ms = int(start_date.timestamp() * 1000)
+        end_ms = int(end_date.timestamp() * 1000)
+        limit = 1000
+        candles: List[Candle] = []
+        current_start = start_ms
+        
+        async with httpx.AsyncClient(timeout=settings.MARKET_DATA_TIMEOUT) as client:
+            while current_start < end_ms:
+                params = {
+                    "symbol": symbol,
+                    "interval": interval,
+                    "startTime": current_start,
+                    "endTime": min(end_ms, current_start + interval_ms * limit),
+                    "limit": limit,
+                }
+                response = await client.get("https://api.binance.com/api/v3/klines", params=params)
+                response.raise_for_status()
+                data = response.json()
+                
+                if not data:
+                    break
+                
+                for entry in data:
+                    open_time = datetime.utcfromtimestamp(entry[0] / 1000)
+                    candle = Candle(
+                        timestamp=open_time,
+                        open=float(entry[1]),
+                        high=float(entry[2]),
+                        low=float(entry[3]),
+                        close=float(entry[4]),
+                        volume=float(entry[5]),
+                    )
+                    candles.append(candle)
+                
+                last_close = data[-1][6]
+                current_start = last_close + 1
+                
+                if len(data) < limit:
+                    break
+        
+        if not candles:
             raise Exception(
-                f"Market data fetch timed out after {settings.MARKET_DATA_TIMEOUT}s"
+                f"No data returned from Binance for {symbol} {interval} "
+                f"from {start_date.date()} to {end_date.date()}"
             )
-        except Exception as e:
-            # Check for rate limit errors
-            error_str = str(e).lower()
-            if 'rate limit' in error_str or '429' in error_str:
-                logger.error(f"yfinance rate limit exceeded: {e}")
-                raise Exception(
-                    f"Rate limit exceeded for market data API. "
-                    f"Please try again later."
-                )
+        
+        logger.info(
+            "Successfully fetched %s candles from Binance", len(candles)
+        )
+        return candles
+    
+    async def _fetch_from_freecryptoapi(
+        self,
+        asset: str,
+        timeframe: str,
+        start_date: datetime,
+        end_date: datetime
+    ) -> List[Candle]:
+        """
+        Fetch historical OHLC data from FreeCryptoAPI.
+        
+        Note: FreeCryptoAPI getOHLC returns daily candles only.
+        For intraday timeframes (15m, 1h, 4h), we'll need to use fallback.
+        
+        Args:
+            asset: Trading asset (e.g., 'BTC/USDT')
+            timeframe: Timeframe (only '1d' is supported by FreeCryptoAPI OHLC)
+            start_date: Start date
+            end_date: End date
             
-            logger.error(f"yfinance API error: {e}")
-            raise Exception(f"Failed to fetch data from yfinance: {e}")
+        Returns:
+            List[Candle]: Historical candlestick data
+        """
+        # Extract base symbol (BTC from BTC/USDT)
+        base_symbol = asset.split('/')[0] if '/' in asset else asset
+        
+        # FreeCryptoAPI getOHLC only supports daily candles
+        if timeframe != '1d':
+            raise Exception(f"FreeCryptoAPI getOHLC only supports daily (1d) timeframe, got {timeframe}")
+        
+        try:
+            async with httpx.AsyncClient(timeout=settings.MARKET_DATA_TIMEOUT) as client:
+                # Use getOHLC endpoint for historical data
+                response = await client.get(
+                    "https://api.freecryptoapi.com/v1/getOHLC",
+                    params={
+                        "symbol": base_symbol,
+                        "start_date": start_date.strftime("%Y-%m-%d"),
+                        "end_date": end_date.strftime("%Y-%m-%d"),
+                        "apikey": "ohy9ctcu1pkbiciq4rzt"
+                    },
+                )
+                response.raise_for_status()
+                data = response.json()
+                
+                if not data.get("status") or not data.get("result"):
+                    raise Exception(f"No data returned from FreeCryptoAPI for {base_symbol}")
+                
+                candles: List[Candle] = []
+                for entry in data["result"]:
+                    # Parse timestamp
+                    time_close_str = entry.get("time_close", "")
+                    if time_close_str:
+                        try:
+                            timestamp = datetime.strptime(time_close_str, "%Y-%m-%d %H:%M:%S")
+                        except ValueError:
+                            # Try date-only format
+                            timestamp = datetime.strptime(time_close_str.split()[0], "%Y-%m-%d")
+                    else:
+                        # Fallback to end_date if no timestamp
+                        timestamp = end_date
+                    
+                    candles.append(
+                        Candle(
+                            timestamp=timestamp,
+                            open=float(entry.get("open", 0)),
+                            high=float(entry.get("high", 0)),
+                            low=float(entry.get("low", 0)),
+                            close=float(entry.get("close", 0)),
+                            volume=0.0,  # FreeCryptoAPI OHLC doesn't include volume
+                        )
+                    )
+                
+                logger.info(
+                    f"Successfully fetched {len(candles)} candles from FreeCryptoAPI for {base_symbol}"
+                )
+                return candles
+                
+        except Exception as e:
+            logger.error(f"Error fetching from FreeCryptoAPI for {asset}: {e}")
+            raise
     
     async def _cache_to_db(
         self,

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { X } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
@@ -13,7 +13,7 @@ import {
   AccordionTrigger,
 } from "@/components/ui/accordion";
 import { cn } from "@/lib/utils";
-import type { StepDataBuffetProps } from "@/types/agent";
+import type { StepDataBuffetProps, AgentMode } from "@/types/agent";
 
 // Shadcn-style chart colors for variety
 const badgeColors = [
@@ -24,6 +24,7 @@ const badgeColors = [
   "bg-[hsl(var(--chart-5))]/15 text-[hsl(var(--chart-5))] border-[hsl(var(--chart-5))]/30",
 ];
 
+// Indicators available in the Buffet
 const indicatorCategories = [
   {
     id: "momentum",
@@ -65,21 +66,50 @@ const indicatorCategories = [
       { id: "obv", name: "OBV", description: "On Balance Volume - Volume flow" },
       { id: "vwap", name: "VWAP", description: "Volume Weighted Average Price" },
       { id: "mfi", name: "MFI", description: "Money Flow Index - Volume-weighted RSI" },
+      { id: "cmf", name: "CMF", description: "Chaikin Money Flow - Volume-weighted price trend" },
       { id: "ad", name: "A/D Line", description: "Accumulation/Distribution" },
+    ],
+  },
+  {
+    id: "advanced",
+    name: "Advanced",
+    indicators: [
+      { id: "supertrend", name: "Supertrend", description: "Trend-following indicator using ATR" },
+      { id: "zscore", name: "Z-Score", description: "Statistical mean reversion indicator" },
     ],
   },
 ];
 
+// Monk Mode is intentionally information-deprived: only RSI and MACD
+const MONK_ALLOWED_INDICATORS: string[] = ["rsi", "macd"];
+
 // Preset indicator selections
 const presets = {
-  monkEssentials: ["rsi", "macd", "ema", "atr", "obv"],
+  monkEssentials: MONK_ALLOWED_INDICATORS,
   all: indicatorCategories.flatMap((cat) => cat.indicators.map((ind) => ind.id)),
 };
 
 export function StepDataBuffet({ formData, updateFormData }: StepDataBuffetProps) {
   const [activeTab, setActiveTab] = useState("indicators");
 
+  // When switching to Monk mode, automatically drop any unsupported indicators
+  useEffect(() => {
+    if (formData.mode === "monk") {
+      const filtered = formData.indicators.filter((id) =>
+        MONK_ALLOWED_INDICATORS.includes(id)
+      );
+      if (filtered.length !== formData.indicators.length) {
+        updateFormData({ indicators: filtered });
+      }
+    }
+  }, [formData.mode, formData.indicators, updateFormData]);
+
   const toggleIndicator = (indicatorId: string) => {
+    // In Monk mode we only allow RSI and MACD. Ignore toggles for others.
+    if (formData.mode === "monk" && !MONK_ALLOWED_INDICATORS.includes(indicatorId)) {
+      return;
+    }
+
     const newIndicators = formData.indicators.includes(indicatorId)
       ? formData.indicators.filter((id) => id !== indicatorId)
       : [...formData.indicators, indicatorId];
@@ -193,6 +223,10 @@ export function StepDataBuffet({ formData, updateFormData }: StepDataBuffetProps
                           <Checkbox
                             id={indicator.id}
                             checked={formData.indicators.includes(indicator.id)}
+                            disabled={
+                              formData.mode === "monk" &&
+                              !MONK_ALLOWED_INDICATORS.includes(indicator.id)
+                            }
                             onCheckedChange={() => toggleIndicator(indicator.id)}
                           />
                           <div className="flex-1">

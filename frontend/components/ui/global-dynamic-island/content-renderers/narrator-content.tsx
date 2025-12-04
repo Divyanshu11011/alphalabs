@@ -14,14 +14,19 @@ interface NarratorContentProps {
 export const NarratorContent = ({ data, isExpanded }: NarratorContentProps) => {
   const hasDetails = Boolean(data.details);
   const hasMetrics = (data.metrics?.length ?? 0) > 0;
+  // Check for pnl - handle 0 as valid value
+  // Always show if pnl is a number (including 0)
+  const hasPnl = typeof data.pnl === "number";
+  // Always show if resultId exists and is not empty
+  const hasResultId = Boolean(data.resultId && data.resultId.trim() !== "");
 
   // Expanded view - Compact layout matching live session style
   if (isExpanded) {
     return (
-      <DynamicContainer className="flex h-full w-full flex-col gap-2 px-4 py-3 pb-2.5">
+      <DynamicContainer className="flex w-full flex-col gap-1.5 px-4 pt-2.5 pb-2 justify-start">
         {/* Header Section - Compact with border separator */}
         <motion.div 
-          className="flex items-center justify-between pb-1.5 border-b border-white/10"
+          className="flex items-center justify-between pb-1 border-b border-white/10 shrink-0"
           initial={{ opacity: 0, y: -12 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ type: "spring", stiffness: 500, damping: 30 }}
@@ -65,7 +70,7 @@ export const NarratorContent = ({ data, isExpanded }: NarratorContentProps) => {
         
         {/* Main Content - Compact card */}
         <motion.div
-          className="rounded-lg bg-white/5 backdrop-blur-sm px-3 py-2 border border-white/10 flex-1 min-h-0"
+          className="rounded-lg bg-white/5 backdrop-blur-sm px-3 py-1.5 border border-white/10 shrink-0"
           initial={{ opacity: 0, y: 5 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.08, type: "spring", stiffness: 400, damping: 30 }}
@@ -73,17 +78,58 @@ export const NarratorContent = ({ data, isExpanded }: NarratorContentProps) => {
           <p className="text-[12px] font-medium text-white/95 leading-relaxed">
             {data.text}
           </p>
-          {hasDetails && (
-            <p className="text-[10px] text-white/60 mt-1.5 leading-relaxed">
+          {hasDetails && !hasPnl && !hasResultId && (
+            <p className="text-[10px] text-white/60 mt-1 leading-relaxed">
               {data.details}
             </p>
           )}
         </motion.div>
 
+        {/* PnL and Result blocks - shown as separate small blocks */}
+        {(hasPnl || hasResultId) && (
+          <motion.div
+            className="flex items-stretch gap-1.5 shrink-0"
+            initial={{ opacity: 0, y: 4 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.12, type: "spring", stiffness: 400, damping: 30 }}
+          >
+            {hasPnl && (
+              <motion.div
+                className="flex-1 rounded-lg border border-white/10 bg-white/5 px-2 py-1 min-w-0"
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                transition={{ delay: 0.15, type: "spring", stiffness: 500, damping: 30 }}
+              >
+                <p className="text-[8px] uppercase tracking-wide text-white/50 truncate">
+                  PnL
+                </p>
+                <p className="text-sm font-semibold text-white/95 leading-tight truncate">
+                  {data.pnl?.toFixed(1) ?? "0"}%
+                </p>
+              </motion.div>
+            )}
+            {hasResultId && (
+              <motion.div
+                className="flex-1 rounded-lg border border-white/10 bg-white/5 px-2 py-1 min-w-0"
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                transition={{ delay: 0.18, type: "spring", stiffness: 500, damping: 30 }}
+              >
+                <p className="text-[8px] uppercase tracking-wide text-white/50 truncate">
+                  Result
+                </p>
+                <p className="text-sm font-semibold text-white/95 leading-tight truncate">
+                  {data.resultId ?? "–"}
+                </p>
+              </motion.div>
+            )}
+          </motion.div>
+        )}
+
         {/* Metrics Grid - Compact flex layout */}
         {hasMetrics && (
           <motion.div
-            className="flex items-stretch gap-1.5"
+            className="flex items-stretch gap-1.5 shrink-0"
             initial={{ opacity: 0, y: 6 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.15, type: "spring", stiffness: 420, damping: 28 }}

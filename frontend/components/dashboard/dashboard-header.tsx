@@ -17,7 +17,10 @@ import {
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import { useAgents } from "@/hooks/use-agents";
 import { useAgentsStore, useDynamicIslandStore } from "@/lib/stores";
+import { useForwardSessions } from "@/hooks/use-forward-sessions";
+import { useBacktestSessions } from "@/hooks/use-backtest-sessions";
 import {
   ExpandableScreen,
   ExpandableScreenTrigger,
@@ -39,50 +42,66 @@ export function DashboardHeader() {
   const { user } = useUser();
   const router = useRouter();
   const { agents } = useAgentsStore();
+  const {
+    isLoading: agentsLoading,
+    error: agentsError,
+    refetch: refetchAgents,
+  } = useAgents();
   
   // Dynamic Island
   const { showIdle, showLiveSession, hide } = useDynamicIslandStore();
   
-  // Show island state on dashboard mount
+  // Get active forward and backtest sessions from shared context (avoid duplicate API calls)
+  // Note: LiveSessionsPanel also uses this hook, but React will deduplicate the requests
+  // due to the same hook instance. For better performance, consider using a shared store.
+  const { sessions: forwardSessions } = useForwardSessions(15000); // Poll every 15 seconds
+  const { sessions: backtestSessions } = useBacktestSessions(15000); // Poll every 15 seconds
+  
+  // Show island state based on active sessions (prioritize forward, then backtest)
   useEffect(() => {
-    // Import dynamically to avoid SSR issues
-    const checkLiveSessions = async () => {
-      const { getPrimaryLiveSession } = await import("@/lib/dummy-island-data");
-      const liveSession = getPrimaryLiveSession();
-      
-      if (liveSession) {
-        // Show live session status with ALL expanded view data
-        showLiveSession({
-          agentName: liveSession.agentName,
-          pnl: liveSession.pnl,
-          duration: liveSession.duration,
-          status: liveSession.status,
-          // Include expanded view fields
-          openPositions: liveSession.openPositions,
-          totalTrades: liveSession.totalTrades,
-          winRate: liveSession.winRate,
-          equity: liveSession.equity,
-          nextDecisionIn: liveSession.nextDecisionIn,
-        });
-      } else {
-        // No active sessions, show idle state
-        showIdle();
-      }
-    };
+    const primaryForwardSession = forwardSessions.find(s => s.status === "running" || s.status === "paused");
+    const primaryBacktestSession = backtestSessions.find(s => s.status === "running" || s.status === "paused");
     
-    // Small delay to let the page render first
-    const timer = setTimeout(checkLiveSessions, 500);
+    // Prioritize forward test sessions
+    const primarySession = primaryForwardSession || primaryBacktestSession;
+    const sessionType = primaryForwardSession ? "forward" : "backtest";
+    
+    if (primarySession) {
+      // Show live session status with ALL expanded view data
+      showLiveSession({
+        agentName: primarySession.agentName,
+        pnl: primarySession.currentPnlPct,
+        duration: primarySession.durationDisplay,
+        status: primarySession.status as "running" | "paused",
+        sessionId: primarySession.id,
+        sessionType: sessionType,
+        // Include expanded view fields
+        openPositions: undefined, // Not available in current API response
+        totalTrades: primarySession.tradesCount,
+        winRate: primarySession.winRate,
+        equity: undefined, // Not available in current API response
+        nextDecisionIn: undefined, // Not available in current API response
+      });
+    } else {
+      // No active sessions, show idle state
+      showIdle();
+    }
     
     return () => {
-      clearTimeout(timer);
-      hide();
+      // Don't hide on unmount - let the island persist
     };
-  }, [showIdle, showLiveSession, hide]);
+  }, [forwardSessions, backtestSessions, showIdle, showLiveSession]);
   
   // Quick test state
   const [selectedAgent, setSelectedAgent] = useState<string>("");
   const [testType, setTestType] = useState<"backtest" | "forward">("backtest");
   
+  useEffect(() => {
+    if (!selectedAgent && agents.length > 0) {
+      setSelectedAgent(agents[0].id);
+    }
+  }, [agents, selectedAgent]);
+
   const agent = agents.find((a) => a.id === selectedAgent);
   const canForwardTest: boolean = !!(agent && (agent.stats.profitableTests ?? 0) > 0);
   
@@ -148,6 +167,9 @@ export function DashboardHeader() {
           >
             <QuickTestContent 
               agents={agents}
+              agentsLoading={agentsLoading}
+              agentsError={agentsError}
+              onRetryAgents={refetchAgents}
               selectedAgent={selectedAgent}
               setSelectedAgent={setSelectedAgent}
               testType={testType}
@@ -181,6 +203,9 @@ export function DashboardHeader() {
 // Quick Test Content Component
 function QuickTestContent({
   agents,
+  agentsLoading,
+  agentsError,
+  onRetryAgents,
   selectedAgent,
   setSelectedAgent,
   testType,
@@ -189,6 +214,9 @@ function QuickTestContent({
   onStartTest,
 }: {
   agents: Agent[];
+  agentsLoading: boolean;
+  agentsError: string | null;
+  onRetryAgents: () => Promise<void>;
   selectedAgent: string;
   setSelectedAgent: (id: string) => void;
   testType: "backtest" | "forward";
@@ -228,33 +256,48 @@ function QuickTestContent({
         </div>
 
         {/* Agent Selection */}
-          <div className="space-y-2">
-            <Label>Select Agent</Label>
-            <AnimatedSelect value={selectedAgent} onValueChange={setSelectedAgent}>
-              <AnimatedSelectTrigger className="h-12">
-                <AnimatedSelectValue placeholder="Choose an agent..." />
-              </AnimatedSelectTrigger>
-              <AnimatedSelectContent>
-                {agents.length === 0 ? (
-                  <div className="p-4 text-center text-sm text-muted-foreground">
-                    No agents yet. Create one first!
-                  </div>
-                ) : (
-                  agents.map((agent) => (
-                    <AnimatedSelectItem key={agent.id} value={agent.id} textValue={agent.name}>
-                      <div className="flex items-center gap-2">
-                        <Bot className="h-4 w-4" />
-                        <span className="font-mono">{agent.name}</span>
-                        <Badge variant="outline" className="text-[10px]">
-                          {agent.mode}
-                        </Badge>
-                      </div>
-                    </AnimatedSelectItem>
-                  ))
-                )}
-              </AnimatedSelectContent>
-            </AnimatedSelect>
-          </div>
+        <div className="space-y-2">
+          <Label>Select Agent</Label>
+          <AnimatedSelect value={selectedAgent} onValueChange={setSelectedAgent}>
+            <AnimatedSelectTrigger className="h-12">
+              <AnimatedSelectValue placeholder="Choose an agent..." />
+            </AnimatedSelectTrigger>
+            <AnimatedSelectContent>
+              {agentsLoading ? (
+                <div className="p-4 text-center text-sm text-muted-foreground">
+                  Loading agents...
+                </div>
+              ) : agentsError ? (
+                <div className="p-4 text-center text-sm text-destructive">
+                  Failed to load agents.
+                  <Button
+                    variant="link"
+                    className="mt-2 text-xs"
+                    onClick={() => void onRetryAgents()}
+                  >
+                    Retry
+                  </Button>
+                </div>
+              ) : agents.length === 0 ? (
+                <div className="p-4 text-center text-sm text-muted-foreground">
+                  No agents yet. Create one first!
+                </div>
+              ) : (
+                agents.map((agent) => (
+                  <AnimatedSelectItem key={agent.id} value={agent.id} textValue={agent.name}>
+                    <div className="flex items-center gap-2">
+                      <Bot className="h-4 w-4" />
+                      <span className="font-mono">{agent.name}</span>
+                      <Badge variant="outline" className="text-[10px]">
+                        {agent.mode}
+                      </Badge>
+                    </div>
+                  </AnimatedSelectItem>
+                ))
+              )}
+            </AnimatedSelectContent>
+          </AnimatedSelect>
+        </div>
 
         {/* Test Type Selection */}
         <div className="space-y-2">

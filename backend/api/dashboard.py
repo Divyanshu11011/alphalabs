@@ -52,7 +52,7 @@ async def get_dashboard_stats(
     
     try:
         stats = await service.get_stats(user_id=current_user.id)
-        return stats
+        return {"stats": stats}
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

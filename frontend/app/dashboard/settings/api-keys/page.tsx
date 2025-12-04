@@ -26,6 +26,8 @@ import {
 } from "@/components/ui/animated-select";
 import { Checkbox } from "@/components/ui/checkbox";
 import { cn } from "@/lib/utils";
+import { useApiKeys } from "@/hooks/use-api-keys";
+import { toast } from "sonner";
 
 type ApiKeyStatus = "valid" | "untested" | "invalid";
 
@@ -47,10 +49,10 @@ const mockApiKeys: ApiKey[] = [
     id: "1",
     provider: "OpenRouter",
     label: "Default",
-    maskedKey: "sk-or-v1-GÇóGÇóGÇóGÇóGÇóGÇóGÇóGÇóGÇóGÇóGÇóGÇóGÇóGÇóGÇóGÇóGÇóGÇóGÇóGÇóGÇóGÇó",
+    maskedKey: "sk-or-v1-Gï¿½ï¿½Gï¿½ï¿½Gï¿½ï¿½Gï¿½ï¿½Gï¿½ï¿½Gï¿½ï¿½Gï¿½ï¿½Gï¿½ï¿½Gï¿½ï¿½Gï¿½ï¿½Gï¿½ï¿½Gï¿½ï¿½Gï¿½ï¿½Gï¿½ï¿½Gï¿½ï¿½Gï¿½ï¿½Gï¿½ï¿½Gï¿½ï¿½Gï¿½ï¿½Gï¿½ï¿½Gï¿½ï¿½Gï¿½ï¿½",
     addedAt: new Date("2025-11-15"),
     lastUsed: "2 hours ago",
-    usedBy: ["+¦-prime", "+¦-2"],
+    usedBy: ["+ï¿½-prime", "+ï¿½-2"],
     status: "valid",
     isDefault: true,
   },
@@ -58,7 +60,7 @@ const mockApiKeys: ApiKey[] = [
     id: "2",
     provider: "OpenRouter",
     label: "Secondary",
-    maskedKey: "sk-or-v1-GÇóGÇóGÇóGÇóGÇóGÇóGÇóGÇóGÇóGÇóGÇóGÇóGÇóGÇóGÇóGÇóGÇóGÇóGÇóGÇóGÇóGÇó",
+    maskedKey: "sk-or-v1-Gï¿½ï¿½Gï¿½ï¿½Gï¿½ï¿½Gï¿½ï¿½Gï¿½ï¿½Gï¿½ï¿½Gï¿½ï¿½Gï¿½ï¿½Gï¿½ï¿½Gï¿½ï¿½Gï¿½ï¿½Gï¿½ï¿½Gï¿½ï¿½Gï¿½ï¿½Gï¿½ï¿½Gï¿½ï¿½Gï¿½ï¿½Gï¿½ï¿½Gï¿½ï¿½Gï¿½ï¿½Gï¿½ï¿½Gï¿½ï¿½",
     addedAt: new Date("2025-11-20"),
     lastUsed: null,
     usedBy: [],
@@ -68,10 +70,68 @@ const mockApiKeys: ApiKey[] = [
 ];
 
 export default function ApiKeysSettingsPage() {
-  const [keys, setKeys] = useState<ApiKey[]>(mockApiKeys);
+  const { apiKeys, isLoading, error, createApiKey, validateApiKey, deleteApiKey } = useApiKeys();
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [newKey, setNewKey] = useState({ provider: "openrouter", label: "", key: "", setDefault: false });
   const [showKey, setShowKey] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Map API response to component format
+  const keys = apiKeys.map((key) => ({
+    id: key.id,
+    provider: key.provider,
+    label: key.label || "",
+    maskedKey: key.key_prefix || "sk-or-v1-â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢",
+    addedAt: new Date(key.created_at),
+    lastUsed: key.last_used_at ? new Date(key.last_used_at).toLocaleString() : null,
+    usedBy: key.used_by || [],
+    status: key.status,
+    isDefault: key.is_default,
+  }));
+
+  const handleCreateKey = async () => {
+    if (!newKey.key.trim()) {
+      toast.error("Please enter an API key");
+      return;
+    }
+    setIsSubmitting(true);
+    try {
+      await createApiKey({
+        provider: newKey.provider,
+        label: newKey.label || undefined,
+        api_key: newKey.key,
+        set_as_default: newKey.setDefault,
+      });
+      toast.success("API key added successfully");
+      setShowAddDialog(false);
+      setNewKey({ provider: "openrouter", label: "", key: "", setDefault: false });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to add API key");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleValidateKey = async (id: string) => {
+    try {
+      await validateApiKey(id);
+      toast.success("API key validated successfully");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to validate API key");
+    }
+  };
+
+  const handleDeleteKey = async (id: string) => {
+    if (!confirm("Are you sure you want to delete this API key?")) {
+      return;
+    }
+    try {
+      await deleteApiKey(id);
+      toast.success("API key deleted successfully");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to delete API key");
+    }
+  };
 
   return (
     <motion.div 
@@ -172,16 +232,25 @@ export default function ApiKeysSettingsPage() {
                 </div>
               </div>
               <DialogFooter>
-                <Button variant="outline" onClick={() => setShowAddDialog(false)}>
+                <Button variant="outline" onClick={() => setShowAddDialog(false)} disabled={isSubmitting}>
                   Cancel
                 </Button>
-                <Button onClick={() => setShowAddDialog(false)}>Save API Key</Button>
+                <Button onClick={handleCreateKey} disabled={isSubmitting}>
+                  {isSubmitting ? "Saving..." : "Save API Key"}
+                </Button>
               </DialogFooter>
             </DialogContent>
           </Dialog>
         </CardHeader>
         <CardContent className="space-y-4">
-          {keys.map((apiKey) => (
+          {isLoading ? (
+            <div className="text-center py-8 text-sm text-muted-foreground">Loading API keys...</div>
+          ) : error ? (
+            <div className="text-center py-8 text-sm text-destructive">{error}</div>
+          ) : keys.length === 0 ? (
+            <div className="text-center py-8 text-sm text-muted-foreground">No API keys found. Add one to get started.</div>
+          ) : (
+            keys.map((apiKey) => (
             <div
               key={apiKey.id}
               className="rounded-lg border border-border/50 bg-muted/20 p-4"
@@ -200,7 +269,7 @@ export default function ApiKeysSettingsPage() {
                     {showKey === apiKey.id ? "sk-or-v1-actual-key-here" : apiKey.maskedKey}
                   </div>
                   <p className="text-xs text-muted-foreground">
-                    Added: {apiKey.addedAt.toLocaleDateString()} GÇó Last used:{" "}
+                    Added: {apiKey.addedAt.toLocaleDateString()} Gï¿½ï¿½ Last used:{" "}
                     {apiKey.lastUsed || "Never"}
                   </p>
                   {apiKey.usedBy.length > 0 && (
@@ -241,21 +310,22 @@ export default function ApiKeysSettingsPage() {
                   )}
                   {showKey === apiKey.id ? "Hide" : "Reveal"}
                 </Button>
-                <Button variant="ghost" size="sm">
+                <Button variant="ghost" size="sm" onClick={() => handleValidateKey(apiKey.id)}>
                   <RefreshCw className="mr-2 h-4 w-4" />
                   Test
                 </Button>
-                <Button variant="ghost" size="sm">
+                <Button variant="ghost" size="sm" onClick={() => toast.info("Edit functionality coming soon")}>
                   <Edit className="mr-2 h-4 w-4" />
                   Edit
                 </Button>
-                <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive">
+                <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={() => handleDeleteKey(apiKey.id)}>
                   <Trash2 className="mr-2 h-4 w-4" />
                   Delete
                 </Button>
               </div>
             </div>
-          ))}
+            ))
+          )}
         </CardContent>
       </Card>
 
@@ -278,7 +348,7 @@ export default function ApiKeysSettingsPage() {
               <div className="flex items-center justify-between">
                 <span className="font-medium">Direct API</span>
                 <Button variant="link" size="sm" className="h-auto p-0">
-                  Setup GåÆ
+                  Setup Gï¿½ï¿½
                 </Button>
               </div>
             </div>

@@ -13,12 +13,17 @@ Data Flow:
         - Handles HTTP errors (404 Not Found, 400 Bad Request).
     - Outgoing: JSON responses containing certificate details or PDF files to the client.
 """
-from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.responses import Response
+import logging
+from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi.responses import Response, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid import UUID
+from typing import Optional
+from urllib.parse import urlparse
 
 from database import get_db
+
+logger = logging.getLogger(__name__)
 from dependencies import get_current_user
 from services.certificate_service import CertificateService
 from schemas.certificate_schemas import (
@@ -26,15 +31,64 @@ from schemas.certificate_schemas import (
     CertificateResponse,
     CertificateVerifyResponse
 )
-from utils.pdf_generator import PDFGenerator
 from models import User
 
 router = APIRouter(prefix="/api/certificates", tags=["certificates"])
 
 
-@router.post("/", response_model=CertificateResponse, status_code=status.HTTP_201_CREATED)
+def _extract_frontend_url(request: Request) -> Optional[str]:
+    """
+    Extract frontend base URL from request headers.
+    
+    Tries in order:
+    1. X-Frontend-URL header (explicitly sent by frontend - most reliable)
+    2. Origin header (for CORS requests)
+    3. Referer header (fallback)
+    4. Host header (constructs from request)
+    
+    Returns:
+        Frontend base URL (e.g., "http://localhost:3000") or None
+    """
+    # Try X-Frontend-URL header first (explicitly sent by frontend)
+    frontend_url = request.headers.get("X-Frontend-URL")
+    if frontend_url:
+        # Validate it's a proper URL
+        try:
+            parsed = urlparse(frontend_url)
+            if parsed.scheme and parsed.netloc:
+                return f"{parsed.scheme}://{parsed.netloc}"
+        except Exception:
+            pass
+    
+    # Try Origin header (for CORS requests)
+    origin = request.headers.get("Origin")
+    if origin:
+        parsed = urlparse(origin)
+        return f"{parsed.scheme}://{parsed.netloc}"
+    
+    # Try Referer header
+    referer = request.headers.get("Referer")
+    if referer:
+        parsed = urlparse(referer)
+        return f"{parsed.scheme}://{parsed.netloc}"
+    
+    # Try to construct from request URL (for same-origin requests)
+    # This is less reliable but works if frontend and backend are on same domain
+    host = request.headers.get("Host")
+    if host:
+        scheme = "https" if request.url.scheme == "https" else "http"
+        # Check if it's the backend port (5000), if so try frontend port (3000)
+        if ":5000" in host:
+            host = host.replace(":5000", ":3000")
+        return f"{scheme}://{host}"
+    
+    return None
+
+
+@router.post("", response_model=CertificateResponse, status_code=status.HTTP_201_CREATED)
 async def create_certificate(
     certificate_data: CertificateCreate,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -50,17 +104,38 @@ async def create_certificate(
     """
     service = CertificateService(db)
     
+    # Extract frontend URL from request
+    frontend_base_url = _extract_frontend_url(request)
+    
+    # Log for debugging - show all headers to help debug
+    logger.info(f"Request headers: Origin={request.headers.get('Origin')}, "
+                f"Referer={request.headers.get('Referer')}, "
+                f"X-Frontend-URL={request.headers.get('X-Frontend-URL')}, "
+                f"Host={request.headers.get('Host')}")
+    
+    if frontend_base_url:
+        logger.info(f"✓ Using frontend URL from request: {frontend_base_url}")
+    else:
+        logger.warning("✗ Could not extract frontend URL from request, falling back to settings")
+        logger.warning(f"  Settings fallback: {settings.CERTIFICATE_SHARE_BASE_URL}")
+    
     try:
         certificate = await service.generate_certificate(
             user_id=current_user.id,
-            result_id=certificate_data.result_id
+            result_id=certificate_data.result_id,
+            frontend_base_url=frontend_base_url
         )
         return certificate
     except ValueError as e:
         # Handle business logic errors (unprofitable result, already exists, etc.)
+        error_message = str(e)
+        logger.warning(
+            f"Certificate creation failed for user {current_user.id}, "
+            f"result {certificate_data.result_id}: {error_message}"
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
+            detail=error_message
         )
     except Exception as e:
         # Handle unexpected errors
@@ -124,14 +199,15 @@ async def download_certificate_pdf(
             detail="Certificate not found"
         )
     
+    if certificate.pdf_url:
+        return RedirectResponse(
+            url=certificate.pdf_url,
+            status_code=status.HTTP_307_TEMPORARY_REDIRECT
+        )
+    
     try:
-        # Generate PDF
-        pdf_generator = PDFGenerator()
-        pdf_bytes = pdf_generator.generate_certificate(certificate)
-        
-        # Return PDF as downloadable file
+        pdf_bytes = certificate_service.build_pdf_for_certificate(certificate)
         filename = f"certificate_{certificate.verification_code}.pdf"
-        
         return Response(
             content=pdf_bytes,
             media_type="application/pdf",
@@ -139,10 +215,54 @@ async def download_certificate_pdf(
                 "Content-Disposition": f'attachment; filename="{filename}"'
             }
         )
-    except Exception as e:
+    except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to generate PDF: {str(e)}"
+            detail=f"Failed to generate PDF: {str(exc)}"
+        )
+
+
+@router.get("/{certificate_id}/image")
+async def download_certificate_image(
+    certificate_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Download a PNG preview of the certificate.
+    """
+    service = CertificateService(db)
+    certificate = await service.get_certificate(
+        certificate_id=certificate_id,
+        user_id=current_user.id
+    )
+    
+    if not certificate:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Certificate not found"
+        )
+    
+    if certificate.image_url:
+        return RedirectResponse(
+            url=certificate.image_url,
+            status_code=status.HTTP_307_TEMPORARY_REDIRECT
+        )
+    
+    try:
+        image_bytes = service.build_image_for_certificate(certificate)
+        filename = f"certificate_{certificate.verification_code}.png"
+        return Response(
+            content=image_bytes,
+            media_type="image/png",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"'
+            }
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate image: {str(exc)}"
         )
 
 

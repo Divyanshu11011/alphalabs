@@ -5,13 +5,15 @@ This module contains the SessionState dataclass that represents the runtime
 state of a forward test session.
 """
 
-from dataclasses import dataclass
-from datetime import datetime
+import asyncio
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
 
 from models.agent import Agent
 from services.market_data_service import Candle
 from services.trading.position_manager import PositionManager
+from services.trading.indicator_calculator import IndicatorCalculator
 from services.ai_trader import AITrader
 
 
@@ -39,11 +41,22 @@ class SessionState:
     timeframe: str
     position_manager: PositionManager
     ai_trader: AITrader
+    indicator_calculator: Optional[IndicatorCalculator] = None
+    is_paused: bool = False
+    pause_event: asyncio.Event = field(default=None)
     is_stopped: bool = False
-    candles_processed: List[Candle] = None
-    ai_thoughts: List[Dict[str, Any]] = None
+    candles_processed: List[Candle] = field(default=None)
+    ai_thoughts: List[Dict[str, Any]] = field(default=None)
     next_candle_time: Optional[datetime] = None
-    auto_stop_config: Dict[str, Any] = None
+    auto_stop_config: Dict[str, Any] = field(default=None)
+    started_at: datetime = field(default=None)
+    equity_curve: List[Dict[str, Any]] = field(default=None)
+    peak_equity: float = 0.0
+    max_drawdown_pct: float = 0.0
+    allow_leverage: bool = False
+    decision_start_index: int = 0
+    decision_mode: str = "every_candle"
+    decision_interval_candles: int = 1
     
     def __post_init__(self):
         """Initialize mutable default values."""
@@ -53,3 +66,12 @@ class SessionState:
             self.ai_thoughts = []
         if self.auto_stop_config is None:
             self.auto_stop_config = {}
+        if self.started_at is None:
+            self.started_at = datetime.now(timezone.utc)
+        if self.equity_curve is None:
+            self.equity_curve = []
+        if not self.peak_equity:
+            self.peak_equity = self.position_manager.starting_capital
+        if self.pause_event is None:
+            self.pause_event = asyncio.Event()
+            self.pause_event.set()  # Start unpaused

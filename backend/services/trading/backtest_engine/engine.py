@@ -28,10 +28,12 @@ Usage:
 
 import asyncio
 import logging
-from datetime import datetime
-from typing import Dict, Optional
+from datetime import datetime, date, timezone
+from typing import Dict, Optional, Union
 
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from models.agent import Agent
 from services.market_data_service import MarketDataService
@@ -45,6 +47,7 @@ from services.trading.backtest_engine.broadcaster import EventBroadcaster
 from services.trading.backtest_engine.position_handler import PositionHandler
 from services.trading.backtest_engine.database import DatabaseManager
 from services.trading.backtest_engine.processor import CandleProcessor
+from services.result_service import ResultService
 
 logger = logging.getLogger(__name__)
 
@@ -95,10 +98,16 @@ class BacktestEngine:
         agent: Agent,
         asset: str,
         timeframe: str,
-        start_date: datetime,
-        end_date: datetime,
+        start_date: Union[datetime, date],
+        end_date: Union[datetime, date],
         starting_capital: float,
-        safety_mode: bool = True
+        safety_mode: bool = True,
+        allow_leverage: bool = False,
+        playback_speed: str = "normal",
+        decision_mode: str = "every_candle",
+        decision_interval_candles: int = 1,
+        indicator_readiness_threshold: float = 80.0,
+        user_id: str = "",
     ) -> None:
         """
         Start a backtest session.
@@ -120,17 +129,36 @@ class BacktestEngine:
             ValidationError: If parameters are invalid
             Exception: If data loading or initialization fails
         """
+        # Normalize to datetime objects (handles date inputs from API)
+        start_dt = self._coerce_to_datetime(start_date, "start_date")
+        end_dt = self._coerce_to_datetime(end_date, "end_date")
+        
+        start_date_str = start_dt.date()
+        end_date_str = end_dt.date()
+        
         logger.info(
             f"Starting backtest: session_id={session_id}, "
             f"agent={agent.name}, asset={asset}, timeframe={timeframe}, "
-            f"start={start_date.date()}, end={end_date.date()}"
+            f"start={start_date_str}, end={end_date_str}"
         )
         
         try:
             # Create a new session for initialization
             async with self.session_factory() as db:
+                # Reload agent with api_key relationship to avoid lazy loading issues
+                # This ensures we have fresh data in the proper async context
+                agent_id = agent.id
+                agent_result = await db.execute(
+                    select(Agent)
+                    .options(selectinload(Agent.api_key))
+                    .where(Agent.id == agent_id)
+                )
+                agent = agent_result.scalar_one_or_none()
+                if not agent:
+                    raise ValidationError(f"Agent not found: {agent_id}")
+                
                 # Validate parameters
-                self._validate_parameters(asset, timeframe, start_date, end_date, starting_capital)
+                self._validate_parameters(asset, timeframe, start_dt, end_dt, starting_capital)
                 
                 # Update session status to initializing
                 await self.database_manager.update_session_status(db, session_id, "initializing")
@@ -141,14 +169,14 @@ class BacktestEngine:
                 candles = await market_data_service.get_historical_data(
                     asset=asset,
                     timeframe=timeframe,
-                    start_date=start_date,
-                    end_date=end_date
+                    start_date=start_dt,
+                    end_date=end_dt
                 )
             
             if not candles:
                 raise ValidationError(
                     f"No historical data available for {asset} {timeframe} "
-                    f"from {start_date.date()} to {end_date.date()}"
+                    f"from {start_date_str} to {end_date_str}"
                 )
             
             logger.info(f"Loaded {len(candles)} candles for backtest")
@@ -162,7 +190,7 @@ class BacktestEngine:
                 candles=candles,
                 enabled_indicators=agent.indicators,
                 mode=agent.mode,
-                custom_indicators=agent.custom_indicators
+                custom_indicators=agent.custom_indicators,
             )
             
             # Initialize position manager
@@ -187,6 +215,21 @@ class BacktestEngine:
                 mode=agent.mode
             )
             
+            # Compute when it's safe to start asking the LLM for decisions.
+            # Use dynamic indicator readiness check (user-configured percentage of indicators ready)
+            # instead of waiting for ALL indicators (which could be 200+ candles
+            # if SMA_200 or EMA_200 is enabled).
+            # Convert percentage (0-100) to decimal (0.0-1.0)
+            readiness_threshold_decimal = indicator_readiness_threshold / 100.0
+            decision_start_index = indicator_calculator.find_first_ready_index(
+                min_ready_percentage=readiness_threshold_decimal
+            )
+            
+            logger.info(
+                f"Decision start index: {decision_start_index} "
+                f"(using dynamic indicator readiness check, {indicator_readiness_threshold}% threshold)"
+            )
+            
             # Create session state
             session_state = SessionState(
                 session_id=session_id,
@@ -195,7 +238,15 @@ class BacktestEngine:
                 current_index=0,
                 position_manager=position_manager,
                 indicator_calculator=indicator_calculator,
-                ai_trader=ai_trader
+                ai_trader=ai_trader,
+                 decision_start_index=decision_start_index,
+                allow_leverage=allow_leverage,
+                playback_speed=playback_speed,
+                decision_mode=decision_mode,
+                decision_interval_candles=decision_interval_candles,
+                user_id=user_id,
+                asset=asset,
+                timeframe=timeframe,
             )
             
             # Store session state
@@ -203,8 +254,10 @@ class BacktestEngine:
             
             # Update session status to running
             async with self.session_factory() as db:
+                started_at = datetime.now(timezone.utc)
+                session_state.started_at = started_at
                 await self.database_manager.update_session_status(db, session_id, "running")
-                await self.database_manager.update_session_started_at(db, session_id, datetime.utcnow())
+                await self.database_manager.update_session_started_at(db, session_id, started_at)
             
             # Broadcast session initialized event
             await self.broadcaster.broadcast_session_initialized(
@@ -228,6 +281,39 @@ class BacktestEngine:
                 await self.database_manager.update_session_status(db, session_id, "failed")
             await self.broadcaster.broadcast_error(session_id, str(e))
             raise
+    
+    @staticmethod
+    def _get_playback_delay(playback_speed: str) -> int:
+        """
+        Get delay in milliseconds for playback speed.
+        
+        Args:
+            playback_speed: Speed setting ('slow', 'normal', 'fast', 'instant')
+            
+        Returns:
+            Delay in milliseconds
+        """
+        speed_map = {
+            "slow": 1000,      # 1 second per candle
+            "normal": 500,     # 500ms per candle
+            "fast": 200,       # 200ms per candle
+            "instant": 0       # No delay
+        }
+        return speed_map.get(playback_speed, 500)  # Default to normal
+    
+    @staticmethod
+    def _coerce_to_datetime(value: Union[datetime, date], field_name: str) -> datetime:
+        """
+        Ensure incoming values are datetime objects with timezone awareness (UTC).
+        """
+        if isinstance(value, datetime):
+            # Ensure timezone-aware (UTC)
+            if value.tzinfo is None:
+                return value.replace(tzinfo=timezone.utc)
+            return value
+        if isinstance(value, date):
+            return datetime.combine(value, datetime.min.time(), tzinfo=timezone.utc)
+        raise ValidationError(f"{field_name} must be a date or datetime, got {type(value).__name__}")
     
     def _validate_parameters(
         self,
@@ -270,7 +356,7 @@ class BacktestEngine:
                 f"start_date ({start_date.date()}) must be before end_date ({end_date.date()})"
             )
         
-        if start_date > datetime.now():
+        if start_date > datetime.now(timezone.utc):
             raise ValidationError(
                 f"start_date ({start_date.date()}) cannot be in the future"
             )
@@ -329,6 +415,12 @@ class BacktestEngine:
                     await self.database_manager.update_session_current_candle(
                         db, session_id, session_state.current_index
                     )
+                    
+                    # Apply playback speed delay (except for instant)
+                    if session_state.playback_speed != "instant":
+                        delay_ms = self._get_playback_delay(session_state.playback_speed)
+                        if delay_ms > 0:
+                            await asyncio.sleep(delay_ms / 1000.0)
                 
                 # Backtest completed
                 if not session_state.is_stopped:
@@ -374,7 +466,7 @@ class BacktestEngine:
         # Update session status in database
         async with self.session_factory() as db:
             await self.database_manager.update_session_status(db, session_id, "paused")
-            await self.database_manager.update_session_paused_at(db, session_id, datetime.utcnow())
+            await self.database_manager.update_session_paused_at(db, session_id, datetime.now(timezone.utc))
         
         # Broadcast paused event
         await self.broadcaster.broadcast_session_paused(session_id, session_state.current_index)
@@ -499,30 +591,36 @@ class BacktestEngine:
         
         # Update session status
         await self.database_manager.update_session_status(db, session_id, "completed")
-        await self.database_manager.update_session_completed_at(db, session_id, datetime.utcnow())
+        await self.database_manager.update_session_completed_at(db, session_id, datetime.now(timezone.utc))
         
         # Get final stats
         stats = session_state.position_manager.get_stats()
         
-        # Update session with final equity and PnL
-        await self.database_manager.update_session_final_stats(
+        await self.database_manager.save_ai_thoughts(db, session_id, session_state.ai_thoughts)
+        await self.database_manager.update_session_runtime_stats(
             db,
             session_id,
-            stats["current_equity"],
-            stats["equity_change_pct"]
+            current_equity=stats["current_equity"],
+            current_pnl_pct=stats["equity_change_pct"],
+            max_drawdown_pct=session_state.max_drawdown_pct,
+            elapsed_seconds=int((datetime.now(timezone.utc) - session_state.started_at).total_seconds()) if session_state.started_at else None,
+            open_position=None,
+            current_candle=session_state.current_index,
         )
         
-        # Save AI thoughts to database
-        await self.database_manager.save_ai_thoughts(db, session_id, session_state.ai_thoughts)
-        
-        # Generate result using ResultService (will be implemented in task 10)
-        # For now, we'll create a placeholder result_id
-        result_id = f"result_{session_id}"
+        result_service = ResultService(db)
+        result_id = await result_service.create_from_session(
+            session_id=session_id,
+            stats=stats,
+            equity_curve=session_state.equity_curve,
+            forced_stop=force_stop
+        )
         
         # Broadcast session completed event
         await self.broadcaster.broadcast_session_completed(
             session_id=session_id,
-            result_id=result_id,
+            # Cast to string so it can be JSON-serialized for WebSocket clients
+            result_id=str(result_id),
             final_equity=stats["current_equity"],
             total_pnl=stats["total_pnl"],
             total_pnl_pct=stats["total_pnl_pct"],

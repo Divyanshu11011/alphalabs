@@ -34,6 +34,8 @@ export interface BacktestConfig {
   speed: PlaybackSpeed;
   safetyMode: boolean;
   allowLeverage: boolean;
+  decisionMode: "every_candle" | "every_n_candles";
+  decisionIntervalCandles: number;
 }
 
 export interface ForwardTestConfig {
@@ -72,6 +74,7 @@ export interface Position {
 
 export interface Trade {
   id: string;
+  tradeNumber?: number; // Trade number from backend for deduplication
   type: "long" | "short";
   entryPrice: number;
   exitPrice: number;
@@ -93,6 +96,8 @@ export interface AIThought {
   type: "analysis" | "decision" | "execution";
   content: string;
   action?: "long" | "short" | "hold" | "close";
+  decisionMode?: "every_candle" | "every_n_candles";
+  decisionInterval?: number;
 }
 
 export interface LiveSession {
@@ -106,5 +111,25 @@ export interface LiveSession {
   trades: number;
   winRate: number;
   status: "running" | "paused";
+}
+
+export interface ForwardStatusResponse {
+  id: string;
+  status: "running" | "paused" | "completed" | "initializing";
+  started_at?: string | null;
+  elapsed_seconds: number;
+  asset: string;
+  timeframe: string;
+  current_equity: number;
+  current_pnl_pct: number;
+  max_drawdown_pct: number;
+  trades_count: number;
+  win_rate: number;
+  next_candle_eta?: number | null;
+  open_position?: {
+    type: "long" | "short";
+    entry_price: number;
+    unrealized_pnl: number;
+  } | null;
 }
 

@@ -29,7 +29,7 @@ from core.encryption import encrypt_api_key, mask_api_key, decrypt_api_key
 
 router = APIRouter(prefix="/api/api-keys", tags=["api-keys"])
 
-@router.get("/", response_model=APIKeyListResponse)
+@router.get("", response_model=APIKeyListResponse)
 async def list_api_keys(
     current_user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
@@ -42,7 +42,7 @@ async def list_api_keys(
     keys = result.scalars().all()
     return {"api_keys": keys}
 
-@router.post("/", response_model=dict)
+@router.post("", response_model=dict)
 async def create_api_key(
     key_data: APIKeyCreate,
     current_user: dict = Depends(get_current_user),

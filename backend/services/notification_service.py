@@ -16,12 +16,13 @@ Data Flow:
 """
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, delete, func
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import selectinload
 from uuid import UUID
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 from datetime import datetime
 
 from models import Notification
+from models.arena import TestSession
 
 
 class NotificationService:
@@ -64,6 +65,7 @@ class NotificationService:
         """
         # Validate notification type
         valid_types = [
+            'test_started',
             'test_completed',
             'trade_executed',
             'stop_loss_hit',
@@ -99,41 +101,26 @@ class NotificationService:
         user_id: UUID,
         unread_only: bool = False,
         limit: int = 20,
-        offset: int = 0
-    ) -> List[Notification]:
-        """
-        List user notifications with pagination and filtering.
-        
-        Args:
-            user_id: ID of the user
-            unread_only: If True, only return unread notifications
-            limit: Maximum number of notifications to return (default: 20, max: 100)
-            offset: Number of notifications to skip for pagination
-            
-        Returns:
-            List[Notification]: List of notifications ordered by created_at DESC
-        """
-        # Enforce maximum limit
+        offset: int = 0,
+    ) -> Tuple[List[Notification], int]:
         limit = min(limit, 100)
-        
-        # Build query
-        query = select(Notification).where(Notification.user_id == user_id)
-        
-        # Apply unread filter if requested
+        base_filters = [Notification.user_id == user_id]
         if unread_only:
-            query = query.where(Notification.is_read == False)
+            base_filters.append(Notification.is_read == False)
         
-        # Order by created_at descending (newest first)
-        query = query.order_by(Notification.created_at.desc())
+        count_query = select(func.count(Notification.id)).where(*base_filters)
+        total = (await self.db.execute(count_query)).scalar_one()
         
-        # Apply pagination
-        query = query.limit(limit).offset(offset)
-        
-        # Execute query
+        query = (
+            select(Notification)
+            .where(*base_filters)
+            .order_by(Notification.created_at.desc())
+            .limit(limit)
+            .offset(offset)
+        )
         result = await self.db.execute(query)
         notifications = result.scalars().all()
-        
-        return list(notifications)
+        return list(notifications), total
     
     async def get_unread_count(
         self,
@@ -251,3 +238,85 @@ class NotificationService:
         await self.db.commit()
         
         return len(deleted_ids)
+
+    async def serialize_notification(self, notification: Notification) -> Dict[str, Any]:
+        category = self._map_category(notification.type)
+        presentation_type = self._map_presentational_type(notification.type)
+        action_url = await self._resolve_action_url(notification)
+        return {
+            "id": notification.id,
+            "type": presentation_type,
+            "category": category,
+            "title": notification.title,
+            "message": notification.message,
+            "action_url": action_url,
+            "session_id": notification.session_id,
+            "result_id": notification.result_id,
+            "is_read": notification.is_read,
+            "created_at": notification.created_at,
+        }
+
+    def _map_category(self, notification_type: str) -> str:
+        mapping = {
+            "test_completed": "test_complete",
+            "trade_executed": "trade_activity",
+            "stop_loss_hit": "risk_alert",
+            "system_alert": "system",
+            "daily_summary": "summary",
+        }
+        return mapping.get(notification_type, notification_type)
+
+    def _map_presentational_type(self, notification_type: str) -> str:
+        if notification_type == "stop_loss_hit":
+            return "warning"
+        if notification_type in ("system_alert", "daily_summary"):
+            return "info"
+        return "success"
+
+    async def _resolve_action_url(self, notification: Notification) -> Optional[str]:
+        """
+        Resolve the action URL for a notification.
+        
+        Logic:
+        - If result_id exists: route to results page
+        - If session_id exists: 
+          - Query session to get type (backtest/forward) and status
+          - If session is running/paused: route to live arena view
+          - If session is completed: route to results if result_id exists, otherwise arena view
+        """
+        # If result_id exists, always route to results (completed test)
+        if notification.result_id:
+            return f"/dashboard/results/{notification.result_id}"
+        
+        # If session_id exists, check session type and status
+        if notification.session_id:
+            # Query the session to get its type and status
+            result = await self.db.execute(
+                select(TestSession)
+                .where(TestSession.id == notification.session_id)
+            )
+            session = result.scalar_one_or_none()
+            
+            if not session:
+                # Session not found, can't determine route
+                return None
+            
+            # Determine arena type based on session.type
+            arena_type = session.type  # 'backtest' or 'forward'
+            
+            # If session is still running or paused, route to live view
+            if session.status in ('running', 'paused', 'initializing'):
+                return f"/dashboard/arena/{arena_type}/{notification.session_id}"
+            
+            # If session is completed, check if we have a result_id
+            # (This shouldn't happen often since completed tests should have result_id,
+            # but handle it just in case)
+            if session.status in ('completed', 'stopped', 'failed'):
+                # If notification has result_id, it would have been handled above
+                # Otherwise, route to arena view (which will show completed state)
+                return f"/dashboard/arena/{arena_type}/{notification.session_id}"
+            
+            # Default: route to arena view
+            return f"/dashboard/arena/{arena_type}/{notification.session_id}"
+        
+        return None

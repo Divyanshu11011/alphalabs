@@ -1,14 +1,22 @@
 import { useAuth } from "@clerk/nextjs";
 import { useCallback } from "react";
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:5000";
+export const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:5000";
 
 type RequestMethod = "GET" | "POST" | "PUT" | "DELETE";
 
-interface ApiOptions {
+export interface ApiOptions {
     method?: RequestMethod;
     body?: any;
     headers?: Record<string, string>;
+}
+
+export interface ApiClient {
+    request: <T>(endpoint: string, options?: ApiOptions) => Promise<T>;
+    get: <T>(endpoint: string, options?: ApiOptions) => Promise<T>;
+    post: <T>(endpoint: string, body?: any, options?: ApiOptions) => Promise<T>;
+    put: <T>(endpoint: string, body?: any, options?: ApiOptions) => Promise<T>;
+    del: <T = void>(endpoint: string, options?: ApiOptions) => Promise<T>;
 }
 
 export async function apiRequest<T>(
@@ -18,10 +26,16 @@ export async function apiRequest<T>(
 ): Promise<T> {
     const { method = "GET", body, headers = {} } = options;
 
+    // Get frontend base URL (for certificate generation and other features)
+    const frontendUrl = typeof window !== "undefined" 
+        ? `${window.location.protocol}//${window.location.host}`
+        : process.env.NEXT_PUBLIC_FRONTEND_URL || "http://localhost:3000";
+
     const config: RequestInit = {
         method,
         headers: {
             "Content-Type": "application/json",
+            "X-Frontend-URL": frontendUrl,  // Explicitly send frontend URL
             ...headers,
         },
     };
@@ -30,7 +44,7 @@ export async function apiRequest<T>(
         (config.headers as Record<string, string>)["Authorization"] = `Bearer ${token}`;
     }
 
-    if (body) {
+    if (body !== undefined) {
         config.body = JSON.stringify(body);
     }
 
@@ -44,13 +58,34 @@ export async function apiRequest<T>(
     return response.json();
 }
 
-export const useApi = () => {
+export const useApiClient = (): ApiClient => {
     const { getToken } = useAuth();
 
-    const request = useCallback(async <T>(endpoint: string, options: ApiOptions = {}) => {
+    const request = useCallback(async <T,>(endpoint: string, options: ApiOptions = {}) => {
         const token = await getToken();
         return apiRequest<T>(endpoint, token, options);
     }, [getToken]);
 
-    return { request };
+    const get = useCallback(<T,>(endpoint: string, options: ApiOptions = {}) => {
+        return request<T>(endpoint, { ...options, method: "GET" });
+    }, [request]);
+
+    const post = useCallback(<T,>(endpoint: string, body?: any, options: ApiOptions = {}) => {
+        return request<T>(endpoint, { ...options, method: "POST", body });
+    }, [request]);
+
+    const put = useCallback(<T,>(endpoint: string, body?: any, options: ApiOptions = {}) => {
+        return request<T>(endpoint, { ...options, method: "PUT", body });
+    }, [request]);
+
+    const del = useCallback(<T,>(endpoint: string, options: ApiOptions = {}) => {
+        return request<T>(endpoint, { ...options, method: "DELETE" });
+    }, [request]);
+
+    return { request, get, post, put, del };
+};
+
+export const useApi = () => {
+    const client = useApiClient();
+    return { request: client.request };
 };

@@ -5,16 +5,7 @@ import {
   useDynamicIslandStore,
   type LiveSessionData,
   type NarratorData,
-  type TradeData,
 } from "@/lib/stores/dynamic-island-store"
-import {
-  DUMMY_ACTIVITY,
-  DUMMY_DASHBOARD_STATS,
-  DUMMY_LIVE_SESSIONS,
-  DUMMY_RESULTS,
-  DUMMY_RESULTS_STATS,
-  DUMMY_TRADES,
-} from "@/lib/dummy-data"
 
 type RotationContext = "dashboard"
 type RotationStep = {
@@ -26,60 +17,81 @@ export interface PreparingConfig {
   type: "backtest" | "forward";
 }
 
-const buildDashboardSequence = (): RotationStep[] => {
+interface RotationData {
+  stats?: {
+    totalAgents: number;
+    testsRun: number;
+    bestAgentName?: string;
+  };
+  avgPnL?: number | null;
+  winRate?: number | null;
+  activity?: {
+    agentName: string;
+    description: string;
+    pnl?: number | null;
+    resultId?: string | null;
+    trades?: number | null;
+    winRate?: number | null;
+  };
+  liveSession?: LiveSessionData;
+}
+
+const buildDashboardSequence = (data?: RotationData): RotationStep[] => {
   const store = useDynamicIslandStore.getState()
+  const stats = data?.stats
+  const totalAgents = stats?.totalAgents ?? 0
+  const testsRun = stats?.testsRun ?? 0
+  const bestAgent = stats?.bestAgentName ?? "—"
+  const avgPnL = data?.avgPnL ?? null
+  const avgPnlDisplay =
+    typeof avgPnL === "number" ? avgPnL.toFixed(1) : "0"
+  const winRatePercent = data?.winRate ?? null
 
   const narratorData: NarratorData = {
     text: "Your LLM collective is compounding edge",
     type: "info",
-    details: `Agents live: ${DUMMY_DASHBOARD_STATS.totalAgents} • Avg PnL: +${DUMMY_RESULTS_STATS.avgPnL}%`,
+    details: `Agents live: ${totalAgents} • Avg PnL: +${avgPnlDisplay}%`,
     metrics: [
-      { label: "Win rate", value: `${DUMMY_RESULTS_STATS.profitablePercent}%` },
-      { label: "Tests run", value: `${DUMMY_DASHBOARD_STATS.testsRun}` },
-      { label: "Best agent", value: DUMMY_DASHBOARD_STATS.bestAgent },
+      { label: "Win rate", value: `${winRatePercent ?? 0}%` },
+      { label: "Tests run", value: `${testsRun}` },
+      { label: "Best agent", value: bestAgent },
     ],
   }
 
-  const liveSessionData: LiveSessionData =
-    DUMMY_LIVE_SESSIONS[0] || {
-      id: "session-demo",
-      agentId: "agent-demo",
-      agentName: "α-demo",
-      asset: "BTC/USDT",
-      startedAt: new Date(),
-      duration: "3h 04m",
-      pnl: 1.8,
-      trades: 4,
-      winRate: 75,
-      status: "running",
-    }
+  const liveSessionData: LiveSessionData | null = data?.liveSession ?? null
 
   const narratorAction = () => store.narrate(narratorData.text, narratorData.type, narratorData)
-  const liveSessionAction = () => store.showLiveSession(liveSessionData)
+  const liveSessionAction = () => {
+    if (liveSessionData) {
+      store.showLiveSession(liveSessionData)
+    } else {
+      store.showIdle()
+    }
+  }
   const idleAction = () => store.showIdle()
 
-  const activity = DUMMY_ACTIVITY?.[0]
+  const activity = data?.activity
   const secondNarratorAction =
     activity &&
     (() => {
       const text = `Agent ${activity.agentName} wrapped ${activity.description.toLowerCase()}`
       
-      // Find matching result data for metrics
-      const result = activity.resultId 
-        ? DUMMY_RESULTS.find(r => r.id === activity.resultId)
-        : null
+      // Build metrics array - show trades and winRate (PnL is shown separately in blocks)
+      const metrics: { label: string; value: string }[] = []
+      // Don't add PnL to metrics since we show it as a separate block
+      if (activity.trades !== null && activity.trades !== undefined) {
+        metrics.push({ label: "Trades", value: `${activity.trades}` })
+      }
+      if (activity.winRate !== null && activity.winRate !== undefined) {
+        metrics.push({ label: "Win rate", value: `${activity.winRate}%` })
+      }
       
       const narratorData: NarratorData = {
         text,
         type: activity.pnl && activity.pnl > 0 ? "result" : "info",
-          details: `PnL ${activity.pnl?.toFixed(1) ?? "0"}% | Result ${activity.resultId ?? "–"}`,
-        metrics: result ? [
-          { label: "PnL", value: `${result.pnl.toFixed(1)}%` },
-          { label: "Trades", value: `${result.trades}` },
-          { label: "Win rate", value: `${result.winRate}%` },
-        ] : activity.pnl ? [
-          { label: "PnL", value: `${activity.pnl.toFixed(1)}%` },
-        ] : undefined,
+        pnl: activity.pnl,
+        resultId: activity.resultId,
+        metrics: metrics.length > 0 ? metrics : undefined,
       }
       
       return store.narrate(narratorData.text, narratorData.type, narratorData)
@@ -90,9 +102,12 @@ const buildDashboardSequence = (): RotationStep[] => {
     { duration: 8000, run: idleAction },
     // User info / performance pulse via narrator view
     { duration: 9000, run: narratorAction },
-    // Live trading presence
-    { duration: 10000, run: liveSessionAction },
   ]
+
+  // Only add live session if we have real data
+  if (liveSessionData) {
+    sequence.push({ duration: 10000, run: liveSessionAction })
+  }
 
   if (secondNarratorAction) {
     sequence.push({ duration: 7000, run: secondNarratorAction })
@@ -101,10 +116,10 @@ const buildDashboardSequence = (): RotationStep[] => {
   return sequence
 }
 
-const buildSequence = (context: RotationContext): RotationStep[] => {
+const buildSequence = (context: RotationContext, data?: RotationData): RotationStep[] => {
   switch (context) {
     case "dashboard":
-      return buildDashboardSequence()
+      return buildDashboardSequence(data)
     default:
       return []
   }
@@ -112,7 +127,8 @@ const buildSequence = (context: RotationContext): RotationStep[] => {
 
 export const useDynamicIslandDemoRotation = (
   context: RotationContext | null,
-  preparingConfig?: PreparingConfig
+  preparingConfig?: PreparingConfig,
+  rotationData?: RotationData
 ) => {
   const timeoutRef = useRef<number | null>(null)
   const stepIndexRef = useRef(0)
@@ -141,7 +157,7 @@ export const useDynamicIslandDemoRotation = (
     }
 
     // Otherwise run the rotation sequence (dashboard)
-    const steps = buildSequence(context)
+    const steps = buildSequence(context, rotationData)
 
     if (!steps.length) {
       return
@@ -166,5 +182,5 @@ export const useDynamicIslandDemoRotation = (
       }
       stepIndexRef.current = 0
     }
-  }, [context, preparingConfig?.type])
+  }, [context, preparingConfig?.type, rotationData])
 }

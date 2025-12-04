@@ -152,6 +152,41 @@ class EventBroadcaster:
             f"number={candle_number}, close={candle.close}"
         )
     
+    async def send_candle_to_connection(
+        self,
+        connection_id: str,
+        candle: Candle,
+        indicators: Dict[str, float],
+        candle_number: int
+    ) -> None:
+        """
+        Send candle event to a specific connection (for historical candles on new connections).
+        
+        Args:
+            connection_id: Connection identifier
+            candle: Candle data object
+            indicators: Calculated indicator values
+            candle_number: Current candle number (can be negative for historical)
+        """
+        event = Event(
+            type=EventType.CANDLE,
+            data={
+                "candle_number": candle_number,
+                "timestamp": candle.timestamp.isoformat(),
+                "open": candle.open,
+                "high": candle.high,
+                "low": candle.low,
+                "close": candle.close,
+                "volume": candle.volume,
+                "indicators": indicators
+            }
+        )
+        await self.websocket_manager.send_to_connection(connection_id, event)
+        self.logger.debug(
+            f"Sent candle to connection: connection_id={connection_id}, "
+            f"number={candle_number}, close={candle.close}"
+        )
+    
     async def broadcast_ai_thinking(self, session_id: str) -> None:
         """
         Broadcast AI thinking event.
@@ -258,6 +293,85 @@ class EventBroadcaster:
             f"Broadcasted session completed: session_id={session_id}, "
             f"final_equity={final_equity}, pnl={total_pnl_pct}%"
         )
+
+    async def broadcast_session_paused(self, session_id: str) -> None:
+        """
+        Broadcast a pause event for a forward session.
+        """
+        event = Event(
+            type=EventType.SESSION_PAUSED,
+            data={"session_id": session_id}
+        )
+        await self.websocket_manager.broadcast_to_session(session_id, event)
+        self.logger.info(f"Broadcasted session paused: session_id={session_id}")
+
+    async def broadcast_session_resumed(self, session_id: str) -> None:
+        """
+        Broadcast a resume event for a forward session.
+        """
+        event = Event(
+            type=EventType.SESSION_RESUMED,
+            data={"session_id": session_id}
+        )
+        await self.websocket_manager.broadcast_to_session(session_id, event)
+        self.logger.info(f"Broadcasted session resumed: session_id={session_id}")
+    
+    async def broadcast_indicator_readiness(
+        self,
+        session_id: str,
+        ready_count: int,
+        total_count: int,
+        ready_percentage: float,
+        is_ready: bool
+    ) -> None:
+        """
+        Broadcast indicator readiness status to WebSocket clients.
+        
+        Args:
+            session_id: Session identifier
+            ready_count: Number of indicators that are ready
+            total_count: Total number of indicators
+            ready_percentage: Percentage of indicators ready
+            is_ready: Whether indicators meet the readiness threshold
+        """
+        event = Event(
+            type=EventType.INDICATOR_READINESS,
+            data={
+                "ready_count": ready_count,
+                "total_count": total_count,
+                "ready_percentage": ready_percentage,
+                "is_ready": is_ready
+            }
+        )
+        await self.websocket_manager.broadcast_to_session(session_id, event)
+        self.logger.debug(
+            f"Broadcasted indicator readiness: session_id={session_id}, "
+            f"{ready_count}/{total_count} ({ready_percentage:.1f}%)"
+        )
+    
+    async def broadcast_price_update(
+        self,
+        session_id: str,
+        price: float,
+        timestamp: datetime
+    ) -> None:
+        """
+        Broadcast real-time price update to WebSocket clients.
+        
+        Args:
+            session_id: Session identifier
+            price: Current price
+            timestamp: Price timestamp
+        """
+        event = Event(
+            type=EventType.PRICE_UPDATE,
+            data={
+                "price": price,
+                "timestamp": timestamp.isoformat()
+            }
+        )
+        await self.websocket_manager.broadcast_to_session(session_id, event)
+        self.logger.debug(f"Broadcasted price update: session_id={session_id}, price={price}")
     
     async def broadcast_error(
         self,

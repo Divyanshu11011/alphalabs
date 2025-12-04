@@ -20,10 +20,17 @@ from sqlalchemy.orm import joinedload
 from uuid import UUID
 from typing import Optional, Dict, Any
 from datetime import datetime
+from io import BytesIO
 import secrets
 import string
 
+import qrcode
+
 from models import Certificate, TestResult, Agent
+from utils.storage import StorageClient
+from utils.pdf_generator import PDFGenerator
+from utils.image_generator import CertificateImageGenerator
+from config import settings
 
 
 class CertificateService:
@@ -37,11 +44,15 @@ class CertificateService:
             db: Async database session
         """
         self.db = db
+        self.storage = StorageClient()
+        self.pdf_generator = PDFGenerator()
+        self.image_generator = CertificateImageGenerator()
     
     async def generate_certificate(
         self, 
         user_id: UUID, 
-        result_id: UUID
+        result_id: UUID,
+        frontend_base_url: Optional[str] = None
     ) -> Certificate:
         """
         Generate a certificate for a test result.
@@ -81,11 +92,21 @@ class CertificateService:
             raise ValueError("Cannot generate certificate for unprofitable result")
         
         # Check if certificate already exists
-        existing_cert = await self.db.execute(
+        existing_cert_result = await self.db.execute(
             select(Certificate).where(Certificate.result_id == result_id)
         )
-        if existing_cert.scalar_one_or_none():
-            raise ValueError("Certificate already exists for this result")
+        existing_cert = existing_cert_result.scalar_one_or_none()
+        if existing_cert:
+            # Certificate already exists, but update share_url if frontend_base_url is provided
+            # This ensures the URL matches the current environment (localhost vs production)
+            if frontend_base_url:
+                new_share_url = self._build_share_url(existing_cert.verification_code, frontend_base_url)
+                if existing_cert.share_url != new_share_url:
+                    # Update the share URL to match current frontend
+                    existing_cert.share_url = new_share_url
+                    await self.db.commit()
+                    await self.db.refresh(existing_cert)
+            return existing_cert
         
         # Generate unique verification code
         verification_code = await self._generate_verification_code()
@@ -96,8 +117,7 @@ class CertificateService:
             test_result.end_date
         )
         
-        # Create share URL (base URL should come from config)
-        share_url = f"https://alphalab.io/verify/{verification_code}"
+        share_url = self._build_share_url(verification_code, frontend_base_url)
         
         # Create certificate record with cached data
         new_certificate = Certificate(
@@ -120,7 +140,82 @@ class CertificateService:
             view_count=0
         )
         
+        # Generate and upload assets
+        pdf_bytes = self._build_pdf_bytes(
+            agent_name=new_certificate.agent_name,
+            model=new_certificate.model,
+            mode=new_certificate.mode,
+            test_type=new_certificate.test_type,
+            asset=new_certificate.asset,
+            pnl_pct=new_certificate.pnl_pct,
+            win_rate=new_certificate.win_rate,
+            total_trades=new_certificate.total_trades,
+            max_drawdown_pct=new_certificate.max_drawdown_pct,
+            sharpe_ratio=new_certificate.sharpe_ratio,
+            duration_display=new_certificate.duration_display,
+            test_period=new_certificate.test_period,
+            verification_code=new_certificate.verification_code,
+            share_url=new_certificate.share_url,
+            issued_at=datetime.utcnow(),
+        )
+        image_bytes = self.image_generator.generate_certificate_image(
+            agent_name=new_certificate.agent_name,
+            model=new_certificate.model,
+            mode=new_certificate.mode,
+            test_type=new_certificate.test_type,
+            asset=new_certificate.asset,
+            pnl_pct=new_certificate.pnl_pct,
+            win_rate=new_certificate.win_rate,
+            total_trades=new_certificate.total_trades,
+            max_drawdown_pct=new_certificate.max_drawdown_pct,
+            sharpe_ratio=new_certificate.sharpe_ratio,
+            duration_display=new_certificate.duration_display,
+            test_period=new_certificate.test_period,
+            verification_code=new_certificate.verification_code,
+            share_url=new_certificate.share_url,
+            issued_at=datetime.utcnow(),
+        )
+        qr_bytes = self._generate_qr_code(new_certificate.share_url)
+
+        # Save certificate first to get the ID
         self.db.add(new_certificate)
+        await self.db.commit()
+        await self.db.refresh(new_certificate)
+        
+        # Now we have the certificate ID, build file paths
+        asset_prefix = f"{new_certificate.user_id}/{new_certificate.id}"
+        pdf_path = f"{asset_prefix}/certificate.pdf"
+        image_path = f"{asset_prefix}/certificate.png"
+        qr_path = f"{asset_prefix}/qr.png"
+
+        # Upload files to storage
+        pdf_url = await self.storage.upload_file(
+            bucket=settings.CERTIFICATE_BUCKET,
+            file_name=pdf_path,
+            file_data=pdf_bytes,
+            content_type="application/pdf",
+            upsert=True,
+        )
+        image_url = await self.storage.upload_file(
+            bucket=settings.CERTIFICATE_BUCKET,
+            file_name=image_path,
+            file_data=image_bytes,
+            content_type="image/png",
+            upsert=True,
+        )
+        qr_url = await self.storage.upload_file(
+            bucket=settings.CERTIFICATE_BUCKET,
+            file_name=qr_path,
+            file_data=qr_bytes,
+            content_type="image/png",
+            upsert=True,
+        )
+
+        # Update certificate with storage URLs
+        new_certificate.pdf_url = pdf_url
+        new_certificate.image_url = image_url
+        new_certificate.qr_code_url = qr_url
+        
         await self.db.commit()
         await self.db.refresh(new_certificate)
         
@@ -209,6 +304,46 @@ class CertificateService:
             "qr_code_url": certificate.qr_code_url
         }
     
+    def build_pdf_for_certificate(self, certificate: Certificate) -> bytes:
+        """Regenerate the certificate PDF for download endpoints."""
+        return self.pdf_generator.generate_certificate(
+            agent_name=certificate.agent_name,
+            model=certificate.model,
+            mode=certificate.mode,
+            test_type=certificate.test_type,
+            asset=certificate.asset,
+            pnl_pct=certificate.pnl_pct,
+            win_rate=certificate.win_rate,
+            total_trades=certificate.total_trades,
+            max_drawdown_pct=certificate.max_drawdown_pct,
+            sharpe_ratio=certificate.sharpe_ratio,
+            duration_display=certificate.duration_display,
+            test_period=certificate.test_period,
+            verification_code=certificate.verification_code,
+            share_url=certificate.share_url,
+            issued_at=certificate.issued_at,
+        )
+    
+    def build_image_for_certificate(self, certificate: Certificate) -> bytes:
+        """Regenerate the certificate PNG for download endpoints."""
+        return self.image_generator.generate_certificate_image(
+            agent_name=certificate.agent_name,
+            model=certificate.model,
+            mode=certificate.mode,
+            test_type=certificate.test_type,
+            asset=certificate.asset,
+            pnl_pct=certificate.pnl_pct,
+            win_rate=certificate.win_rate,
+            total_trades=certificate.total_trades,
+            max_drawdown_pct=certificate.max_drawdown_pct,
+            sharpe_ratio=certificate.sharpe_ratio,
+            duration_display=certificate.duration_display,
+            test_period=certificate.test_period,
+            verification_code=certificate.verification_code,
+            share_url=certificate.share_url,
+            issued_at=certificate.issued_at,
+        )
+    
     async def _generate_verification_code(self) -> str:
         """
         Generate a unique verification code.
@@ -274,3 +409,83 @@ class CertificateService:
         
         # If different years, show: "Dec 15, 2024 - Jan 15, 2025"
         return f"{start_date.strftime('%b %d, %Y')} - {end_date.strftime('%b %d, %Y')}"
+    
+    def _build_share_url(self, verification_code: str, frontend_base_url: Optional[str] = None) -> str:
+        """
+        Build the share URL for certificate verification.
+        
+        Args:
+            verification_code: Unique verification code for the certificate
+            frontend_base_url: Optional frontend base URL from request (e.g., http://localhost:3000)
+                             If not provided, falls back to settings.CERTIFICATE_SHARE_BASE_URL
+        
+        Returns:
+            Full URL to the verification page (e.g., http://localhost:3000/verify/abc123)
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        if frontend_base_url:
+            base = frontend_base_url.rstrip("/")
+            # Ensure it includes /verify path
+            if not base.endswith("/verify"):
+                base = f"{base}/verify"
+            logger.info(f"Building share URL with frontend_base_url: {base}/{verification_code}")
+        else:
+            # Fallback to settings
+            base = settings.CERTIFICATE_SHARE_BASE_URL.rstrip("/")
+            logger.warning(f"Using fallback settings URL: {base}/{verification_code}")
+        
+        return f"{base}/{verification_code}"
+    
+    def _build_pdf_bytes(
+        self,
+        *,
+        agent_name: str,
+        model: str,
+        mode: str,
+        test_type: str,
+        asset: str,
+        pnl_pct,
+        win_rate,
+        total_trades,
+        max_drawdown_pct,
+        sharpe_ratio,
+        duration_display: str,
+        test_period: str,
+        verification_code: str,
+        share_url: str,
+        issued_at: datetime,
+    ) -> bytes:
+        return self.pdf_generator.generate_certificate(
+            agent_name=agent_name,
+            model=model,
+            mode=mode,
+            test_type=test_type,
+            asset=asset,
+            pnl_pct=pnl_pct,
+            win_rate=win_rate,
+            total_trades=total_trades,
+            max_drawdown_pct=max_drawdown_pct,
+            sharpe_ratio=sharpe_ratio,
+            duration_display=duration_display,
+            test_period=test_period,
+            verification_code=verification_code,
+            share_url=share_url,
+            issued_at=issued_at,
+        )
+    
+    def _generate_qr_code(self, url: str) -> bytes:
+        qr = qrcode.QRCode(
+            version=1,
+            error_correction=qrcode.constants.ERROR_CORRECT_L,
+            box_size=10,
+            border=2,
+        )
+        qr.add_data(url)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="#00D4FF", back_color="#0A0A0F")
+        buffer = BytesIO()
+        img.save(buffer, format="PNG")
+        buffer.seek(0)
+        return buffer.getvalue()

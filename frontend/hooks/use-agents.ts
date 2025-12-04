@@ -1,301 +1,336 @@
-import { useState, useEffect, useCallback } from "react";
-import { useApi as useApiRequest } from "@/lib/api";
+import { useCallback, useEffect, useRef } from "react";
+import { useApiClient } from "@/lib/api";
+import { useAgentsStore } from "@/lib/stores/agents-store";
+import type { Agent, AgentMode } from "@/types/agent";
 
 export interface CustomIndicator {
-    name: string;
-    formula: string;
-}
-
-export interface Agent {
-    id: string;
-    name: string;
-    mode: "monk" | "omni";
-    model: string;
-    api_key_id?: string;
-    api_key_masked: string;
-    indicators: string[];
-    custom_indicators?: CustomIndicator[];
-    strategy_prompt: string;
-    tests_run: number;
-    best_pnl: number;
-    total_profitable_tests: number;
-    avg_win_rate: number;
-    avg_drawdown: number;
-    created_at: string;
-    updated_at: string;
+  name: string;
+  formula: string;
 }
 
 export interface AgentCreate {
-    name: string;
-    mode: "monk" | "omni";
-    model: string;
-    api_key_id: string;
-    indicators: string[];
-    custom_indicators?: CustomIndicator[];
-    strategy_prompt: string;
+  name: string;
+  mode: AgentMode;
+  model: string;
+  api_key_id: string;
+  indicators: string[];
+  custom_indicators?: CustomIndicator[];
+  strategy_prompt: string;
 }
 
 export interface AgentUpdate {
-    name?: string;
-    mode?: "monk" | "omni";
-    model?: string;
-    api_key_id?: string;
-    indicators?: string[];
-    custom_indicators?: CustomIndicator[];
-    strategy_prompt?: string;
+  name?: string;
+  mode?: AgentMode;
+  model?: string;
+  api_key_id?: string;
+  indicators?: string[];
+  custom_indicators?: CustomIndicator[];
+  strategy_prompt?: string;
 }
 
-export interface AgentFilters {
-    search?: string;
-    mode?: "monk" | "omni";
-    model?: string;
-    sort?: "newest" | "oldest" | "performance" | "tests" | "alpha";
-    include_archived?: boolean;
-}
+export type AgentFilters = {
+  search?: string;
+  mode?: AgentMode;
+  model?: string;
+  sort?: "newest" | "oldest" | "performance" | "tests" | "alpha";
+};
 
-export interface AgentStats {
-    id: string;
-    tests_run: number;
-    best_pnl: number;
-    worst_pnl: number;
-    total_profitable_tests: number;
-    total_losing_tests: number;
-    avg_win_rate: number;
-    avg_profit_factor: number;
-    avg_drawdown: number;
-    avg_sharpe_ratio: number;
-}
+const mapAgentResponse = (payload: any): Agent => ({
+  id: payload.id,
+  name: payload.name,
+  model: payload.model,
+  mode: payload.mode,
+  indicators: payload.indicators ?? [],
+  customIndicators: payload.custom_indicators ?? [],
+  strategyPrompt: payload.strategy_prompt ?? "",
+  apiKeyMasked: payload.api_key_masked ?? "",
+  testsRun: payload.tests_run ?? 0,
+  bestPnL: payload.best_pnl ?? null,
+  createdAt: payload.created_at ? new Date(payload.created_at) : new Date(),
+  updatedAt: payload.updated_at ? new Date(payload.updated_at) : new Date(),
+  isArchived: payload.is_archived ?? false,
+  stats: {
+    totalTests: payload.tests_run ?? 0,
+    profitableTests: payload.total_profitable_tests ?? 0,
+    bestPnL: payload.best_pnl ?? 0,
+    avgWinRate: payload.avg_win_rate ?? 0,
+    avgDrawdown: payload.avg_drawdown ?? 0,
+  },
+});
 
-export function useAgents(initialFilters?: AgentFilters) {
-    const { request } = useApiRequest();
-    const [agents, setAgents] = useState<Agent[]>([]);
-    const [isLoading, setIsLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
-    const [filters, setFilters] = useState<AgentFilters>(initialFilters || {});
-    const [total, setTotal] = useState(0);
+const buildQueryString = (filters: AgentFilters) => {
+  const params = new URLSearchParams();
+  if (filters.search) params.append("search", filters.search);
+  if (filters.mode) params.append("mode", filters.mode);
+  if (filters.model) params.append("model", filters.model);
+  if (filters.sort) params.append("sort", filters.sort);
+  return params.toString() ? `?${params.toString()}` : "";
+};
 
-    // Helper methods for different HTTP operations
-    const get = useCallback(
-        async <T,>(endpoint: string) => {
-            return request<T>(endpoint, { method: "GET" });
-        },
-        [request]
-    );
+export function useAgents(initialFilters?: AgentFilters, includeArchived = false) {
+  const { get, post, put, del } = useApiClient();
+  const {
+    agents,
+    total,
+    filters,
+    isLoading,
+    error,
+    lastQueryKey,
+    setAgents,
+    setTotal,
+    setLoading,
+    setError,
+    setFilters,
+    setSearchQuery,
+    toggleModelFilter,
+    toggleModeFilter,
+    setSortBy,
+    clearFilters,
+    filteredAgents,
+    setLastQueryKey,
+  } = useAgentsStore((state) => state);
 
-    const post = useCallback(
-        async <T,>(endpoint: string, body?: any) => {
-            return request<T>(endpoint, { method: "POST", body });
-        },
-        [request]
-    );
+  const appliedInitialFilters = useRef(false);
+  useEffect(() => {
+    if (initialFilters && !appliedInitialFilters.current) {
+      setFilters(initialFilters);
+      appliedInitialFilters.current = true;
+    }
+  }, [initialFilters, setFilters]);
 
-    const put = useCallback(
-        async <T,>(endpoint: string, body?: any) => {
-            return request<T>(endpoint, { method: "PUT", body });
-        },
-        [request]
-    );
+  const fetchAgents = useCallback(async (force = false) => {
+    // Get current state values from store to check if we should skip
+    const storeState = useAgentsStore.getState();
+    
+    // Prevent concurrent fetches
+    if (storeState.isLoading && !force) {
+      return;
+    }
+    
+    setLoading(true);
+    setError(null);
+    try {
+      // Get filters from store to ensure we have the latest
+      const currentFilters = storeState.filters;
+      const queryString = buildQueryString({
+        search: currentFilters.search,
+        mode: currentFilters.mode,
+        model: currentFilters.model,
+        sort: currentFilters.sort,
+      });
+      const archivedParam = includeArchived ? "&include_archived=true" : "";
+      const fullQuery = queryString ? `${queryString}${archivedParam}` : archivedParam ? `?${archivedParam.slice(1)}` : "";
+      // Create a full query key that matches the actual query sent to API
+      const fullQueryKey = fullQuery;
+      
+      const currentLastQueryKey = storeState.lastQueryKey;
+      const currentAgents = storeState.agents;
+      
+      // Only skip if not forcing and query key matches and we have data
+      if (!force && currentLastQueryKey === fullQueryKey && currentAgents.length > 0) {
+        setLoading(false);
+        return;
+      }
+      setLastQueryKey(fullQueryKey);
+      const response = await get<{ agents: any[]; total: number }>(
+        `/api/agents${fullQuery}`
+      );
+      setAgents(response.agents.map(mapAgentResponse));
+      setTotal(response.total ?? response.agents.length);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to fetch agents");
+    } finally {
+      setLoading(false);
+    }
+  }, [get, setAgents, setError, setLastQueryKey, setLoading, setTotal, includeArchived]);
 
-    const del = useCallback(
-        async (endpoint: string) => {
-            return request(endpoint, { method: "DELETE" });
-        },
-        [request]
-    );
+  // Track previous values to prevent unnecessary fetches
+  const prevValuesRef = useRef({ includeArchived, filters });
+  
+  useEffect(() => {
+    const storeState = useAgentsStore.getState();
+    
+    // Skip if already loading
+    if (storeState.isLoading) {
+      return;
+    }
+    
+    // Check if anything actually changed
+    const includeArchivedChanged = prevValuesRef.current.includeArchived !== includeArchived;
+    const filtersChanged = 
+      prevValuesRef.current.filters.search !== filters.search ||
+      prevValuesRef.current.filters.mode !== filters.mode ||
+      prevValuesRef.current.filters.model !== filters.model ||
+      prevValuesRef.current.filters.sort !== filters.sort;
+    
+    // Update ref
+    prevValuesRef.current = { includeArchived, filters };
+    
+    // Only fetch if something changed
+    if (includeArchivedChanged || filtersChanged) {
+      void fetchAgents(includeArchivedChanged);
+    } else {
+      // On mount, fetch if we don't have data
+      const hasData = storeState.agents.length > 0 && storeState.lastQueryKey;
+      if (!hasData) {
+        void fetchAgents();
+      }
+    }
+  }, [includeArchived, filters.search, filters.mode, filters.model, filters.sort, fetchAgents]);
 
-    // Build query string from filters
-    const buildQueryString = useCallback((filters: AgentFilters) => {
-        const params = new URLSearchParams();
-        if (filters.search) params.append("search", filters.search);
-        if (filters.mode) params.append("mode", filters.mode);
-        if (filters.model) params.append("model", filters.model);
-        if (filters.sort) params.append("sort", filters.sort);
-        if (filters.include_archived !== undefined) {
-            params.append("include_archived", String(filters.include_archived));
-        }
-        return params.toString() ? `?${params.toString()}` : "";
-    }, []);
+  const updateFilters = useCallback(
+    (partial: AgentFilters) => {
+      setFilters(partial);
+    },
+    [setFilters]
+  );
 
-    // Fetch agents with filters
-    const fetchAgents = useCallback(
-        async (customFilters?: AgentFilters) => {
-            console.log("fetchAgents called", { customFilters, filters });
-            try {
-                setIsLoading(true);
-                setError(null);
-                const activeFilters = customFilters || filters;
-                const queryString = buildQueryString(activeFilters);
-                console.log("Fetching from:", `/api/agents${queryString}`);
-                const response = await get<{ agents: Agent[]; total: number }>(
-                    `/api/agents${queryString}`
-                );
-                console.log("Fetch success:", response);
-                setAgents(response.agents);
-                setTotal(response.total);
-            } catch (err) {
-                console.error("Fetch error:", err);
-                setError(err instanceof Error ? err.message : "Failed to fetch agents");
-            } finally {
-                setIsLoading(false);
-            }
-        },
-        [get, buildQueryString] // Removed filters from dependencies
-    );
+  const createAgent = useCallback(
+    async (data: AgentCreate) => {
+      setError(null);
+      try {
+        const response = await post<{ agent: Agent; message: string }>(
+          "/api/agents",
+          data
+        );
+        // Force refresh to get the new agent
+        await fetchAgents(true);
+        return response.agent;
+      } catch (err) {
+        const errorMessage =
+          err instanceof Error ? err.message : "Failed to create agent";
+        setError(errorMessage);
+        throw err;
+      }
+    },
+    [fetchAgents, post, setError]
+  );
 
-    // Auto-fetch on mount only
-    useEffect(() => {
-        fetchAgents();
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []); // Empty array - only fetch on mount
+  const getAgent = useCallback(
+    async (id: string) => {
+      setError(null);
+      try {
+        return await get<Agent>(`/api/agents/${id}`);
+      } catch (err) {
+        const errorMessage =
+          err instanceof Error ? err.message : "Failed to fetch agent";
+        setError(errorMessage);
+        throw err;
+      }
+    },
+    [get, setError]
+  );
 
-    // Refetch when filters change
-    useEffect(() => {
-        if (filters.search !== undefined || filters.mode || filters.model || filters.sort) {
-            fetchAgents();
-        }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [filters.search, filters.mode, filters.model, filters.sort]);
+  const updateAgent = useCallback(
+    async (id: string, data: AgentUpdate) => {
+      setError(null);
+      try {
+        const response = await put<Agent>(`/api/agents/${id}`, data);
+        // Force refresh to get updated agent
+        await fetchAgents(true);
+        return response;
+      } catch (err) {
+        const errorMessage =
+          err instanceof Error ? err.message : "Failed to update agent";
+        setError(errorMessage);
+        throw err;
+      }
+    },
+    [fetchAgents, put, setError]
+  );
 
-    // Update filters and refetch
-    const updateFilters = useCallback(
-        (newFilters: Partial<AgentFilters>) => {
-            setFilters((prev) => ({ ...prev, ...newFilters }));
-        },
-        []
-    );
+  const deleteAgent = useCallback(
+    async (id: string, archive: boolean = true) => {
+      setError(null);
+      try {
+        const queryString = archive ? "?archive=true" : "?archive=false";
+        await del(`/api/agents/${id}${queryString}`);
+        // Force refresh to remove deleted agent
+        await fetchAgents(true);
+      } catch (err) {
+        const errorMessage =
+          err instanceof Error ? err.message : "Failed to delete agent";
+        setError(errorMessage);
+        throw err;
+      }
+    },
+    [del, fetchAgents, setError]
+  );
 
-    // Create new agent
-    const createAgent = useCallback(
-        async (data: AgentCreate) => {
-            try {
-                setError(null);
-                const response = await post<{ agent: Agent; message: string }>(
-                    "/api/agents",
-                    data
-                );
-                await fetchAgents(); // Refresh the list
-                return response.agent;
-            } catch (err) {
-                const errorMessage =
-                    err instanceof Error ? err.message : "Failed to create agent";
-                setError(errorMessage);
-                throw err;
-            }
-        },
-        [post, fetchAgents]
-    );
+  const duplicateAgent = useCallback(
+    async (id: string, newName: string) => {
+      setError(null);
+      try {
+        const response = await post<{ agent: Agent; message: string }>(
+          `/api/agents/${id}/duplicate`,
+          { new_name: newName }
+        );
+        // Force refresh to get the duplicated agent
+        await fetchAgents(true);
+        return response.agent;
+      } catch (err) {
+        const errorMessage =
+          err instanceof Error ? err.message : "Failed to duplicate agent";
+        setError(errorMessage);
+        throw err;
+      }
+    },
+    [fetchAgents, post, setError]
+  );
 
-    // Get single agent
-    const getAgent = useCallback(
-        async (id: string) => {
-            try {
-                setError(null);
-                // Backend returns the agent object directly
-                const response = await get<Agent>(`/api/agents/${id}`);
-                return response;
-            } catch (err) {
-                const errorMessage =
-                    err instanceof Error ? err.message : "Failed to fetch agent";
-                setError(errorMessage);
-                throw err;
-            }
-        },
-        [get]
-    );
+  const restoreAgent = useCallback(
+    async (id: string) => {
+      setError(null);
+      try {
+        await post<{ message: string; id: string }>(`/api/agents/${id}/restore`);
+        // Force refresh to get the restored agent
+        await fetchAgents(true);
+      } catch (err) {
+        const errorMessage =
+          err instanceof Error ? err.message : "Failed to restore agent";
+        setError(errorMessage);
+        throw err;
+      }
+    },
+    [fetchAgents, post, setError]
+  );
 
-    // Update agent
-    const updateAgent = useCallback(
-        async (id: string, data: AgentUpdate) => {
-            try {
-                setError(null);
-                // Backend returns the updated agent object directly
-                const response = await put<Agent>(
-                    `/api/agents/${id}`,
-                    data
-                );
-                await fetchAgents(); // Refresh the list
-                return response;
-            } catch (err) {
-                const errorMessage =
-                    err instanceof Error ? err.message : "Failed to update agent";
-                setError(errorMessage);
-                throw err;
-            }
-        },
-        [put, fetchAgents]
-    );
+  const getAgentStats = useCallback(
+    async (id: string) => {
+      setError(null);
+      try {
+        const response = await get<{ stats: any }>(`/api/agents/${id}/stats`);
+        return response.stats;
+      } catch (err) {
+        const errorMessage =
+          err instanceof Error ? err.message : "Failed to fetch agent stats";
+        setError(errorMessage);
+        throw err;
+      }
+    },
+    [get, setError]
+  );
 
-    // Delete agent (archive by default)
-    const deleteAgent = useCallback(
-        async (id: string, archive: boolean = true) => {
-            try {
-                setError(null);
-                const queryString = archive ? "?archive=true" : "?archive=false";
-                await del(`/api/agents/${id}${queryString}`);
-                await fetchAgents(); // Refresh the list
-            } catch (err) {
-                const errorMessage =
-                    err instanceof Error ? err.message : "Failed to delete agent";
-                setError(errorMessage);
-                throw err;
-            }
-        },
-        [del, fetchAgents]
-    );
-
-    // Duplicate agent
-    const duplicateAgent = useCallback(
-        async (id: string, newName: string) => {
-            try {
-                setError(null);
-                const response = await post<{ agent: Agent; message: string }>(
-                    `/api/agents/${id}/duplicate`,
-                    { new_name: newName }
-                );
-                await fetchAgents(); // Refresh the list
-                return response.agent;
-            } catch (err) {
-                const errorMessage =
-                    err instanceof Error ? err.message : "Failed to duplicate agent";
-                setError(errorMessage);
-                throw err;
-            }
-        },
-        [post, fetchAgents]
-    );
-
-    // Get agent stats
-    const getAgentStats = useCallback(
-        async (id: string) => {
-            try {
-                setError(null);
-                const response = await get<{ stats: AgentStats }>(
-                    `/api/agents/${id}/stats`
-                );
-                return response.stats;
-            } catch (err) {
-                const errorMessage =
-                    err instanceof Error ? err.message : "Failed to fetch agent stats";
-                setError(errorMessage);
-                throw err;
-            }
-        },
-        [get]
-    );
-
-    return {
-        agents,
-        total,
-        isLoading,
-        error,
-        filters,
-        updateFilters,
-        createAgent,
-        getAgent,
-        updateAgent,
-        deleteAgent,
-        duplicateAgent,
-        getAgentStats,
-        refetch: fetchAgents,
-    };
+  return {
+    agents,
+    total,
+    isLoading,
+    error,
+    filters,
+    updateFilters,
+    setSearchQuery,
+    toggleModelFilter,
+    toggleModeFilter,
+    setSortBy,
+    clearFilters,
+    filteredAgents: filteredAgents(),
+    createAgent,
+    getAgent,
+    updateAgent,
+    deleteAgent,
+    duplicateAgent,
+    restoreAgent,
+    getAgentStats,
+    refetch: () => fetchAgents(true),
+  };
 }

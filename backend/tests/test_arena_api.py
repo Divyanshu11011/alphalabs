@@ -3,8 +3,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 from fastapi.testclient import TestClient
 from app import app
-from api.arena import get_backtest_engine
+from api.arena import get_backtest_engine, get_forward_engine
 from services.trading.backtest_engine import BacktestEngine
+from services.trading.forward_engine import ForwardEngine
 
 @pytest.fixture
 def client():
@@ -21,8 +22,22 @@ def mock_engine():
     return engine
 
 @pytest.fixture
+def mock_forward_engine():
+    engine = MagicMock(spec=ForwardEngine)
+    engine.pause_forward_test = AsyncMock()
+    engine.resume_forward_test = AsyncMock()
+    engine.active_sessions = {}
+    return engine
+
+@pytest.fixture
 def override_get_engine(mock_engine):
     app.dependency_overrides[get_backtest_engine] = lambda: mock_engine
+    yield
+    app.dependency_overrides = {}
+
+@pytest.fixture
+def override_get_forward_engine(mock_forward_engine):
+    app.dependency_overrides[get_forward_engine] = lambda: mock_forward_engine
     yield
     app.dependency_overrides = {}
 
@@ -81,3 +96,35 @@ async def test_stop_backtest(client, mock_auth_dependency, override_get_engine, 
     
     assert response.status_code == 200
     mock_engine.stop_backtest.assert_called_with(session_id)
+
+@pytest.mark.asyncio
+async def test_pause_forward_session(client, mock_auth_dependency, mock_db_session, override_get_forward_engine, mock_forward_engine):
+    session_id = uuid4()
+    test_session = MagicMock()
+    test_session.id = session_id
+    test_session.user_id = mock_auth_dependency.id
+    test_session.type = "forward"
+    result = AsyncMock()
+    result.scalar_one_or_none.return_value = test_session
+    mock_db_session.execute.return_value = result
+
+    response = client.post(f"/api/arena/forward/{session_id}/pause")
+
+    assert response.status_code == 200
+    mock_forward_engine.pause_forward_test.assert_awaited_once_with(str(session_id))
+
+@pytest.mark.asyncio
+async def test_resume_forward_session(client, mock_auth_dependency, mock_db_session, override_get_forward_engine, mock_forward_engine):
+    session_id = uuid4()
+    test_session = MagicMock()
+    test_session.id = session_id
+    test_session.user_id = mock_auth_dependency.id
+    test_session.type = "forward"
+    result = AsyncMock()
+    result.scalar_one_or_none.return_value = test_session
+    mock_db_session.execute.return_value = result
+
+    response = client.post(f"/api/arena/forward/{session_id}/resume")
+
+    assert response.status_code == 200
+    mock_forward_engine.resume_forward_test.assert_awaited_once_with(str(session_id))

@@ -1,8 +1,11 @@
 "use client";
 
 import { Bot, FlaskConical, TrendingUp, Target, ArrowUp, ArrowDown } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
+import { Skeleton } from "@/components/ui/skeleton";
+import { useDashboardDataContext } from "@/components/providers/dashboard-data-provider";
 
 interface StatCardProps {
   title: string;
@@ -12,7 +15,7 @@ interface StatCardProps {
     value: string;
     direction: "up" | "down" | "neutral";
   };
-  icon: React.ElementType;
+  icon: LucideIcon;
   valueClassName?: string;
 }
 
@@ -22,21 +25,14 @@ function StatCard({ title, value, subtitle, trend, icon: Icon, valueClassName }:
       <CardContent className="p-4 md:p-6">
         <div className="flex items-start justify-between">
           <div className="space-y-2">
-            {/* Icon */}
             <div className="flex h-8 w-8 items-center justify-center rounded-md bg-muted/50">
               <Icon className="h-4 w-4 text-muted-foreground" />
             </div>
-            
-            {/* Value */}
             <div className={cn("font-mono text-2xl font-bold md:text-3xl", valueClassName)}>
               {value}
             </div>
-            
-            {/* Title */}
             <p className="text-xs text-muted-foreground md:text-sm">{title}</p>
           </div>
-
-          {/* Trend or Subtitle */}
           <div className="text-right">
             {trend && (
               <div
@@ -62,20 +58,43 @@ function StatCard({ title, value, subtitle, trend, icon: Icon, valueClassName }:
   );
 }
 
+const StatSkeletonRow = () => (
+  <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+    {[1, 2, 3, 4].map((key) => (
+      <Card key={key} className="border-border/50 bg-card/30">
+        <CardContent className="p-4 md:p-6 space-y-3">
+          <Skeleton className="h-8 w-8 rounded-md" />
+          <Skeleton className="h-6 w-24" />
+          <Skeleton className="h-4 w-16" />
+        </CardContent>
+      </Card>
+    ))}
+  </div>
+);
+
+const formatPercent = (value?: number, digits = 1) => {
+  if (value === undefined || value === null) return "—";
+  const formatted = value.toFixed(digits);
+  const prefix = value > 0 ? "+" : "";
+  return `${prefix}${formatted}%`;
+};
+
 export function StatsCardRow() {
-  // In a real app, this would come from API/state
-  const stats = {
-    totalAgents: 3,
-    testsRun: 27,
-    bestPnL: 47.2,
-    avgWinRate: 62,
-    trends: {
-      agentsThisWeek: 1,
-      testsToday: 5,
-      winRateChange: 3,
-    },
-    bestAgent: "α-1",
-  };
+  const { stats } = useDashboardDataContext();
+
+  if (!stats) {
+    return <StatSkeletonRow />;
+  }
+
+  const winRateChange = stats.trends.winRateChange;
+  const winRateDirection =
+    winRateChange !== undefined && winRateChange !== null
+      ? winRateChange > 0
+        ? "up"
+        : winRateChange < 0
+        ? "down"
+        : "neutral"
+      : "neutral";
 
   return (
     <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -84,8 +103,8 @@ export function StatsCardRow() {
         value={stats.totalAgents}
         icon={Bot}
         trend={{
-          value: `↑${stats.trends.agentsThisWeek} this week`,
-          direction: "up",
+          value: `${stats.trends.agentsThisWeek} this week`,
+          direction: stats.trends.agentsThisWeek >= 0 ? "up" : "neutral",
         }}
       />
       <StatCard
@@ -93,25 +112,34 @@ export function StatsCardRow() {
         value={stats.testsRun}
         icon={FlaskConical}
         trend={{
-          value: `↑${stats.trends.testsToday} today`,
-          direction: "up",
+          value: `${stats.trends.testsToday} today`,
+          direction: stats.trends.testsToday >= 0 ? "up" : "neutral",
         }}
       />
       <StatCard
         title="Best PnL"
-        value={`+${stats.bestPnL}%`}
+        value={formatPercent(stats.bestPnL, 1)}
         icon={TrendingUp}
         valueClassName="text-[hsl(var(--accent-green))]"
-        subtitle={`Agent: ${stats.bestAgent}`}
+        subtitle={stats.bestAgent ? `Agent: ${stats.bestAgent.name}` : undefined}
       />
       <StatCard
         title="Avg Win Rate"
-        value={`${stats.avgWinRate}%`}
+        value={formatPercent(stats.avgWinRate, 1)}
         icon={Target}
-        trend={{
-          value: `↑${stats.trends.winRateChange}% vs last month`,
-          direction: "up",
-        }}
+        trend={
+          winRateChange !== undefined && winRateChange !== null && winRateChange !== 0
+            ? {
+                value: `${Math.abs(winRateChange).toFixed(1)}% vs last period`,
+                direction: winRateDirection,
+              }
+            : undefined
+        }
+        subtitle={
+          winRateChange === undefined || winRateChange === null || winRateChange === 0
+            ? "No change from last period"
+            : undefined
+        }
       />
     </div>
   );

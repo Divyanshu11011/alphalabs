@@ -24,8 +24,8 @@ class Settings(BaseSettings):
     
     # Supabase Configuration
     SUPABASE_URL: str
-    SUPABASE_KEY: str
-    SUPABASE_KEY2: Optional[str] = None
+    SUPABASE_KEY: str  # Anon key (for public operations)
+    SUPABASE_KEY2: Optional[str] = None  # Service role key (for backend operations, bypasses RLS)
     SUPABASE_DB_HOST: Optional[str] = None
     SUPABASE_DB_PORT: Optional[int] = 5432
     SUPABASE_DB_NAME: Optional[str] = "postgres"
@@ -57,14 +57,18 @@ class Settings(BaseSettings):
     MAX_WEBSOCKET_CONNECTIONS: int = 100
     
     # Timeouts (in seconds)
-    AI_DECISION_TIMEOUT: int = 30
+    # How long we wait for an LLM trading decision before falling back to HOLD.
+    # Kept intentionally low so backtests don't freeze the UI if OpenRouter is slow.
+    AI_DECISION_TIMEOUT: int = 10
     MARKET_DATA_TIMEOUT: int = 10
     WEBSOCKET_HEARTBEAT_INTERVAL: int = 30
     
     # Retry Configuration
-    MAX_RETRIES: int = 3
+    # For trading decisions we generally want to fail fast rather than stall
+    # the entire backtest on repeated timeouts.
+    MAX_RETRIES: int = 1
     RETRY_BASE_DELAY: float = 1.0
-    RETRY_MAX_DELAY: float = 10.0
+    RETRY_MAX_DELAY: float = 5.0
     
     # Circuit Breaker Configuration
     CIRCUIT_BREAKER_FAILURE_THRESHOLD: int = 5
@@ -80,10 +84,18 @@ class Settings(BaseSettings):
     
     # Export Limits
     MAX_EXPORT_SIZE_MB: int = 100
-    EXPORT_URL_EXPIRY_HOURS: int = 24
+    EXPORT_EXPIRY_HOURS: int = 24
     
     # Encryption
     ENCRYPTION_KEY: Optional[str] = None
+    
+    # WebSocket configuration
+    WEBSOCKET_BASE_URL: str = "ws://localhost:8000"
+    
+    # Storage / sharing
+    CERTIFICATE_BUCKET: str = "certificates"
+    CERTIFICATE_SHARE_BASE_URL: str = "http://localhost:3000/verify"  # Base URL for certificate verification (e.g., https://alphalab.io/verify)
+    EXPORT_BUCKET: str = "exports"
     
     model_config = ConfigDict(
         env_file=".env",

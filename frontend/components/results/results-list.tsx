@@ -1,5 +1,6 @@
 "use client";
 
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { BarChart3, Search, FileText, Share2, ChevronLeft, ChevronRight } from "lucide-react";
 import Link from "next/link";
 import { Card, CardContent } from "@/components/ui/card";
@@ -14,15 +15,18 @@ import {
   AnimatedSelectValue,
 } from "@/components/ui/animated-select";
 import { cn } from "@/lib/utils";
-import { useResultsStore } from "@/lib/stores";
-import type { TestResult } from "@/types";
+import { useResultsApi, type ResultListParams } from "@/hooks/use-results-api";
+import { useResultsStore } from "@/lib/stores/results-store";
+import type { ResultListItem, ResultFilters, ResultPagination, ResultsStats } from "@/types/result";
 
 interface ResultCardProps {
-  result: TestResult;
+  result: ResultListItem;
 }
 
 function ResultCard({ result }: ResultCardProps) {
-  const isProfitable = result.pnl >= 0;
+  const isProfitable = result.isProfitable ?? result.totalPnlPct >= 0;
+  const createdAt = useMemo(() => new Date(result.createdAt), [result.createdAt]);
+  const durationDisplay = result.durationDisplay ?? "—";
 
   return (
     <Card className="group border-border/50 bg-card/30 transition-colors hover:bg-muted/20">
@@ -49,7 +53,7 @@ function ResultCard({ result }: ResultCardProps) {
                 )}
               >
                 {isProfitable ? "+" : ""}
-                {result.pnl}%
+                {result.totalPnlPct.toFixed(2)}%
               </span>
             </div>
 
@@ -61,17 +65,17 @@ function ResultCard({ result }: ResultCardProps) {
                 <span className="hidden sm:inline capitalize text-muted-foreground">{result.mode} Mode</span>
               </p>
               <p className="text-xs text-muted-foreground mt-1">
-                {result.date.toLocaleDateString("en-US", {
+                {createdAt.toLocaleDateString("en-US", {
                   month: "short",
                   day: "numeric",
                 })}
                 {" • "}
-                {result.duration}
+                {durationDisplay}
                 {" • "}
-                {result.trades} trades
+                {result.totalTrades} trades
               </p>
               <p className="mt-1 text-xs text-muted-foreground">
-                Win: {result.winRate}% • DD: {result.maxDrawdown}%
+                Win: {result.winRate?.toFixed(1) ?? "—"}% • DD: {result.maxDrawdownPct?.toFixed(2) ?? "—"}%
               </p>
             </div>
 
@@ -83,16 +87,17 @@ function ResultCard({ result }: ResultCardProps) {
                 </Link>
               </Button>
               {isProfitable && (
-                <>
-                  <Button variant="ghost" size="sm" className="h-8 px-2 sm:px-3 text-xs sm:text-sm gap-1">
-                    <FileText className="h-3 w-3" />
-                    <span className="hidden xs:inline">Cert</span>
-                  </Button>
-                  <Button variant="ghost" size="sm" className="h-8 px-2 sm:px-3 text-xs sm:text-sm gap-1">
+                <Button 
+                  variant="ghost" 
+                  size="sm" 
+                  asChild
+                  className="h-8 px-2 sm:px-3 text-xs sm:text-sm gap-1"
+                >
+                  <Link href={`/dashboard/results/${result.id}#certificate`}>
                     <Share2 className="h-3 w-3" />
-                    <span className="hidden xs:inline">Share</span>
-                  </Button>
-                </>
+                    <span className="hidden xs:inline">Share Certificate</span>
+                  </Link>
+                </Button>
               )}
             </div>
           </div>
@@ -102,23 +107,126 @@ function ResultCard({ result }: ResultCardProps) {
   );
 }
 
-export function ResultsList() {
-  const {
-    stats,
-    filters,
-    setSearchQuery,
-    setTypeFilter,
-    setResultFilter,
-    page,
-    setPage,
-    totalPages,
-    paginatedResults,
-    filteredResults,
-  } = useResultsStore();
+const DEFAULT_STATS: ResultsStats = {
+  totalTests: 0,
+  profitable: 0,
+  profitablePercent: 0,
+  bestResult: 0,
+  avgPnL: 0,
+};
 
-  const displayResults = paginatedResults();
-  const totalFiltered = filteredResults().length;
-  const pages = totalPages();
+const DEFAULT_FILTERS: ResultFilters = {
+  search: "",
+  type: "all",
+  result: "all",
+};
+
+export function ResultsList() {
+  const { fetchResults, fetchStats } = useResultsApi();
+  const refreshKey = useResultsStore((state) => state.refreshKey);
+  const setResultsStore = useResultsStore((state) => state.setResults);
+  const setStatsStore = useResultsStore((state) => state.setStats);
+  const [stats, setStats] = useState<ResultsStats>(DEFAULT_STATS);
+  const [results, setResults] = useState<ResultListItem[]>([]);
+  const [filters, setFilters] = useState<ResultFilters>(DEFAULT_FILTERS);
+  const [page, setPage] = useState(1);
+  const pageSize = 10;
+  const [pagination, setPagination] = useState<ResultPagination | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const paramsForRequest = useCallback(() => {
+    const params: ResultListParams = {
+      page,
+      limit: pageSize,
+    };
+    if (filters.type !== "all") {
+      params.type = filters.type;
+    }
+    if (filters.result === "profitable") {
+      params.profitable = true;
+    } else if (filters.result === "loss") {
+      params.profitable = false;
+    }
+    if (filters.search) {
+      params.search = filters.search;
+    }
+    if (filters.agentId) {
+      params.agentId = filters.agentId;
+    }
+    return params;
+  }, [filters, page]);
+
+  const loadStats = useCallback(async () => {
+    try {
+      const response = await fetchStats();
+      const payload = response.stats;
+      const nextStats = {
+        totalTests: payload.total_tests ?? 0,
+        profitable: payload.profitable ?? 0,
+        profitablePercent: Math.round(payload.profitable_pct ?? 0),
+        bestResult: payload.best_result ?? 0,
+        avgPnL: payload.avg_pnl ?? 0,
+      };
+      setStats(nextStats);
+      setStatsStore(nextStats);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load stats");
+    }
+  }, [fetchStats]);
+
+  const loadResults = useCallback(async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const response = await fetchResults(paramsForRequest());
+      setResults(response.results);
+      setPagination(response.pagination);
+      setResultsStore(response.results);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load results");
+    } finally {
+      setIsLoading(false);
+    }
+  }, [fetchResults, paramsForRequest]);
+
+  useEffect(() => {
+    void loadStats();
+  }, [loadStats]);
+
+  useEffect(() => {
+    void loadResults();
+  }, [loadResults]);
+
+  // Refresh when refreshKey changes (triggered by store)
+  // Only depend on refreshKey, not the callbacks, to avoid infinite loops
+  useEffect(() => {
+    if (refreshKey > 0) {
+      void loadStats();
+      void loadResults();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshKey]);
+
+  const handleSearchChange = (value: string) => {
+    setFilters((prev) => ({ ...prev, search: value }));
+    setPage(1);
+  };
+
+  const handleTypeFilter = (value: ResultFilters["type"]) => {
+    setFilters((prev) => ({ ...prev, type: value }));
+    setPage(1);
+  };
+
+  const handleResultFilter = (value: ResultFilters["result"]) => {
+    setFilters((prev) => ({ ...prev, result: value }));
+    setPage(1);
+  };
+
+  const totalResults = pagination?.total ?? results.length;
+  const totalPages = pagination?.totalPages ?? (totalResults > 0 ? Math.ceil(totalResults / pageSize) : 1);
+  const startIndex = totalResults === 0 ? 0 : (page - 1) * pageSize + 1;
+  const endIndex = totalResults === 0 ? 0 : Math.min(page * pageSize, totalResults);
 
   return (
     <div className="space-y-6">
@@ -165,7 +273,7 @@ export function ResultsList() {
           <CardContent className="p-4">
             <p className="text-sm text-muted-foreground">Avg PnL</p>
             <p className="mt-1 font-mono text-2xl font-bold text-[hsl(var(--accent-green))]">
-              +{stats.avgPnL}%
+              {stats.avgPnL >= 0 ? "+" : ""}{stats.avgPnL.toFixed(2)}%
             </p>
           </CardContent>
         </Card>
@@ -178,12 +286,12 @@ export function ResultsList() {
           <Input
             placeholder="Search by agent..."
             value={filters.search}
-            onChange={(e) => setSearchQuery(e.target.value)}
+            onChange={(e) => handleSearchChange(e.target.value)}
             className="pl-9"
           />
         </div>
         <div className="flex gap-3">
-          <AnimatedSelect value={filters.type} onValueChange={(value) => setTypeFilter(value as "all" | "backtest" | "forward")}>
+          <AnimatedSelect value={filters.type} onValueChange={(value) => handleTypeFilter(value as ResultFilters["type"])}>
             <AnimatedSelectTrigger className="flex-1 sm:w-[150px]">
               <AnimatedSelectValue placeholder="Type" />
             </AnimatedSelectTrigger>
@@ -193,7 +301,10 @@ export function ResultsList() {
               <AnimatedSelectItem value="forward">Forward Test</AnimatedSelectItem>
             </AnimatedSelectContent>
           </AnimatedSelect>
-          <AnimatedSelect value={filters.result} onValueChange={(value) => setResultFilter(value as "all" | "profitable" | "loss")}>
+          <AnimatedSelect
+            value={filters.result}
+            onValueChange={(value) => handleResultFilter(value as ResultFilters["result"])}
+          >
             <AnimatedSelectTrigger className="flex-1 sm:w-[150px]">
               <AnimatedSelectValue placeholder="Result" />
             </AnimatedSelectTrigger>
@@ -208,7 +319,17 @@ export function ResultsList() {
 
       {/* Results List */}
       <div className="space-y-4">
-        {displayResults.length === 0 ? (
+        {error ? (
+          <div className="rounded-md border border-destructive/50 bg-destructive/10 p-4 text-sm text-destructive">
+            {error}
+          </div>
+        ) : isLoading ? (
+          Array.from({ length: 3 }).map((_, idx) => (
+            <Card key={idx} className="border-border/50 bg-card/30">
+              <CardContent className="h-24 animate-pulse rounded-md bg-muted/30" />
+            </Card>
+          ))
+        ) : results.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-12 text-center">
             <BarChart3 className="mb-4 h-12 w-12 text-muted-foreground" />
             <h3 className="font-mono text-lg font-medium">No results found</h3>
@@ -217,36 +338,34 @@ export function ResultsList() {
             </p>
           </div>
         ) : (
-          displayResults.map((result) => (
-            <ResultCard key={result.id} result={result} />
-          ))
+          results.map((result) => <ResultCard key={result.id} result={result} />)
         )}
       </div>
 
       {/* Pagination */}
-      {pages > 1 && (
+      {totalPages > 1 && (
         <div className="flex flex-col sm:flex-row items-center justify-between gap-3 text-sm text-muted-foreground">
           <span className="order-2 sm:order-1">
-            Showing {(page - 1) * 10 + 1}-{Math.min(page * 10, totalFiltered)} of {totalFiltered}
+            Showing {startIndex}-{endIndex} of {totalResults}
           </span>
           <div className="flex items-center gap-2 order-1 sm:order-2 w-full sm:w-auto justify-center sm:justify-end">
             <Button
               variant="outline"
               size="sm"
               disabled={page === 1}
-              onClick={() => setPage(page - 1)}
+              onClick={() => setPage(Math.max(1, page - 1))}
             >
               <ChevronLeft className="h-4 w-4 sm:mr-1" />
               <span className="hidden sm:inline">Prev</span>
             </Button>
             <span className="px-2 whitespace-nowrap">
-              {page} / {pages}
+              {page} / {totalPages}
             </span>
             <Button
               variant="outline"
               size="sm"
-              disabled={page === pages}
-              onClick={() => setPage(page + 1)}
+              disabled={page === totalPages}
+              onClick={() => setPage(Math.min(totalPages, page + 1))}
             >
               <span className="hidden sm:inline">Next</span>
               <ChevronRight className="h-4 w-4 sm:ml-1" />

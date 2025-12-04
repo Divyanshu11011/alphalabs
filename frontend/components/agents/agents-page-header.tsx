@@ -1,6 +1,6 @@
 "use client";
 
-import { Search, Filter, ArrowUpDown, Plus, X } from "lucide-react";
+import { Search, Filter, ArrowUpDown, Plus, X, Archive } from "lucide-react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -14,9 +14,15 @@ import {
 } from "@/components/ui/animated-dropdown";
 import { Badge } from "@/components/ui/badge";
 import { useAgentsStore } from "@/lib/stores";
+import { useModels } from "@/hooks/use-models";
 import type { AgentMode } from "@/types";
 
-export function AgentsPageHeader() {
+interface AgentsPageHeaderProps {
+  showArchived?: boolean;
+  onToggleArchived?: () => void;
+}
+
+export function AgentsPageHeader({ showArchived = false, onToggleArchived }: AgentsPageHeaderProps) {
   const {
     agents,
     filters,
@@ -26,6 +32,7 @@ export function AgentsPageHeader() {
     setSortBy,
     clearFilters,
   } = useAgentsStore();
+  const { models, isLoading: modelsLoading, error: modelsError, refetch } = useModels();
 
   const activeFiltersCount = filters.models.length + filters.modes.length;
 
@@ -95,24 +102,26 @@ export function AgentsPageHeader() {
           </AnimatedDropdownTrigger>
           <AnimatedDropdownContent align="start" className="w-56">
             <AnimatedDropdownLabel>Model</AnimatedDropdownLabel>
-            <AnimatedDropdownCheckboxItem
-              checked={filters.models.includes("deepseek-r1")}
-              onCheckedChange={() => toggleModelFilter("deepseek-r1")}
-            >
-              DeepSeek-R1
-            </AnimatedDropdownCheckboxItem>
-            <AnimatedDropdownCheckboxItem
-              checked={filters.models.includes("claude-3.5")}
-              onCheckedChange={() => toggleModelFilter("claude-3.5")}
-            >
-              Claude 3.5
-            </AnimatedDropdownCheckboxItem>
-            <AnimatedDropdownCheckboxItem
-              checked={filters.models.includes("gemini-1.5")}
-              onCheckedChange={() => toggleModelFilter("gemini-1.5")}
-            >
-              Gemini 1.5 Pro
-            </AnimatedDropdownCheckboxItem>
+            {modelsLoading && models.length === 0 ? (
+              <div className="p-2 text-xs text-muted-foreground">Loading models...</div>
+            ) : modelsError && models.length === 0 ? (
+              <div className="p-2 text-xs text-destructive">
+                Failed to load models.
+                <Button variant="link" size="sm" className="px-1 py-0 text-[10px]" onClick={() => void refetch()}>
+                  Retry
+                </Button>
+              </div>
+            ) : (
+              models.map((model) => (
+                <AnimatedDropdownCheckboxItem
+                  key={model.id}
+                  checked={filters.models.includes(model.id)}
+                  onCheckedChange={() => toggleModelFilter(model.id)}
+                >
+                  {model.name}
+                </AnimatedDropdownCheckboxItem>
+              ))
+            )}
 
             <AnimatedDropdownSeparator />
 
@@ -189,6 +198,19 @@ export function AgentsPageHeader() {
             </AnimatedDropdownCheckboxItem>
           </AnimatedDropdownContent>
         </AnimatedDropdown>
+
+        {/* Show Archived Toggle */}
+        {onToggleArchived && (
+          <Button
+            variant={showArchived ? "default" : "outline"}
+            size="sm"
+            className="gap-2"
+            onClick={onToggleArchived}
+          >
+            <Archive className="h-4 w-4" />
+            {showArchived ? "Hide Archived" : "Show Archived"}
+          </Button>
+        )}
       </div>
     </div>
   );

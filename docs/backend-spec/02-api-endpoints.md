@@ -1051,9 +1051,10 @@ Get recent activity feed.
       "id": "uuid",
       "type": "test_completed",
       "agent_name": "α-prime",
-      "description": "Backtest completed",
+      "description": "Backtest completed (BTC/USDT · Monk)",
       "pnl": 23.4,
       "result_id": "uuid",
+      "action_url": "/dashboard/results/uuid",
       "timestamp": "2025-11-27T08:00:00Z"
     }
   ]
@@ -1080,6 +1081,7 @@ Get onboarding progress.
     {
       "id": "run_backtest",
       "label": "Run a backtest",
+      "description": "Test your agent against historical data",
       "is_complete": false,
       "href": "/dashboard/arena/backtest",
       "cta_text": "Start Test"
@@ -1087,6 +1089,7 @@ Get onboarding progress.
     {
       "id": "get_certificate",
       "label": "Generate your first certificate",
+      "description": "Share verified performance",
       "is_complete": false,
       "href": "/dashboard/results",
       "cta_text": "View Results"
@@ -1120,10 +1123,14 @@ List notifications.
       "title": "Backtest Complete",
       "message": "α-1 finished backtest with +23.4% PnL",
       "action_url": "/dashboard/results/uuid",
+      "session_id": null,
+      "result_id": "uuid",
       "is_read": false,
       "created_at": "2025-11-27T08:00:00Z"
     }
-  ]
+  ],
+  "total": 5,
+  "unread_count": 3
 }
 ```
 

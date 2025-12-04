@@ -7,9 +7,13 @@ import { Separator } from "@/components/ui/separator";
 import { usePathname } from "next/navigation";
 import { useUIStore } from "@/lib/stores";
 import { GlobalDynamicIsland } from "@/components/ui/global-dynamic-island";
-import { DUMMY_DASHBOARD_STATS, DUMMY_RESULTS_STATS } from "@/lib/dummy-data";
 import { useDynamicIslandDemoRotation } from "@/lib/use-dynamic-island-demo-rotation";
 import type { AccentColor } from "@/types";
+import {
+  DashboardDataProvider,
+  useDashboardDataContext,
+} from "@/components/providers/dashboard-data-provider";
+import { GlobalBacktestStream } from "@/components/providers/global-backtest-stream";
 
 // Accent color mappings to HSL values
 const accentColorMap: Record<AccentColor, { primary: string; ring: string }> = {
@@ -69,35 +73,58 @@ function AccentColorProvider() {
   return null;
 }
 
-export default function DashboardLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
+function DashboardLayoutInner({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const isDashboardRoot = pathname === "/dashboard";
   const isBacktestConfig = pathname === "/dashboard/arena/backtest";
   const isForwardConfig = pathname === "/dashboard/arena/forward";
+  const isBattlePage = pathname.startsWith("/dashboard/arena/backtest/") || pathname.startsWith("/dashboard/arena/forward/");
+  const isAgentsPage = pathname.startsWith("/dashboard/agents");
+  const isResultsPage = pathname.startsWith("/dashboard/results");
+  const isCertsPage = pathname.startsWith("/dashboard/certs");
+  const { stats, averageProfit, activity } = useDashboardDataContext();
   
   // Determine rotation context and preparing message:
-  // - Dashboard root: show dashboard rotation
+  // - Dashboard root, Agents, Results, Certs: show dashboard rotation
   // - Config pages: show static preparing message
   // - Battle/Live pages: null (let battle-screen.tsx control the island)
-  const rotationContext = isDashboardRoot ? "dashboard" as const : null;
+  const rotationContext = (isDashboardRoot || isAgentsPage || isResultsPage || isCertsPage) 
+    ? ("dashboard" as const) 
+    : null;
   
   const preparingConfig = useMemo(() => {
-    if (isBacktestConfig) return { type: "backtest" as const };
-    if (isForwardConfig) return { type: "forward" as const };
+    // Only show preparing on config pages (not on battle/live pages)
+    if (isBacktestConfig && !isBattlePage) return { type: "backtest" as const };
+    if (isForwardConfig && !isBattlePage) return { type: "forward" as const };
     return undefined;
-  }, [isBacktestConfig, isForwardConfig]);
+  }, [isBacktestConfig, isForwardConfig, isBattlePage]);
   
-  useDynamicIslandDemoRotation(rotationContext, preparingConfig);
+  const rotationData = useMemo(() => {
+    if (!stats) return undefined;
+    return {
+      stats: {
+        totalAgents: stats.totalAgents,
+        testsRun: stats.testsRun,
+        bestAgentName: stats.bestAgent?.name,
+      },
+      avgPnL: stats.bestPnL ?? averageProfit ?? null,
+      winRate: stats.trends.winRateChange ?? null,
+      activity: activity.length
+        ? {
+            agentName: activity[0].agentName ?? "Agent",
+            description: activity[0].description,
+            pnl: activity[0].pnl ?? undefined,
+            resultId: activity[0].resultId ?? undefined,
+          }
+        : undefined,
+    };
+  }, [stats, averageProfit, activity]);
+
+  useDynamicIslandDemoRotation(rotationContext, preparingConfig, rotationData);
   
-  // Get page title, defaulting to a capitalized version of the last path segment
   const getPageTitle = () => {
     if (pageTitles[pathname]) return pageTitles[pathname];
     
-    // Check for dynamic routes
     if (pathname.startsWith("/dashboard/agents/") && pathname.includes("/edit")) {
       return "Edit Agent";
     }
@@ -116,18 +143,14 @@ export default function DashboardLayout({
     
     return "Dashboard";
   };
-
-  // Use data from dummy-data.ts (tomorrow replace with real API calls)
-  const totalAgents = DUMMY_DASHBOARD_STATS.totalAgents;
-  const averageProfit = DUMMY_RESULTS_STATS.avgPnL;
-
+  
   return (
     <SidebarProvider>
       <KeyboardShortcuts />
       <AccentColorProvider />
-      <GlobalDynamicIsland 
-        totalAgents={totalAgents}
-        averageProfit={averageProfit}
+      <GlobalDynamicIsland
+        totalAgents={stats?.totalAgents ?? 0}
+        averageProfit={averageProfit ?? undefined}
       />
       <AppSidebar />
       <SidebarInset>
@@ -150,6 +173,17 @@ export default function DashboardLayout({
         </main>
       </SidebarInset>
     </SidebarProvider>
+  );
+}
+
+export default function DashboardLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <DashboardDataProvider>
+      <DashboardLayoutInner>
+        <GlobalBacktestStream />
+        {children}
+      </DashboardLayoutInner>
+    </DashboardDataProvider>
   );
 }
 

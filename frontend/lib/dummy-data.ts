@@ -20,7 +20,7 @@ import type {
   EquityCurvePoint,
   Trade,
   AIThought,
-  Notification,
+  NotificationItem,
   UserProfile,
 } from "@/types";
 
@@ -119,7 +119,10 @@ export const DUMMY_DASHBOARD_STATS: DashboardStats = {
     testsToday: 5,
     winRateChange: 3,
   },
-  bestAgent: "α-1",
+  bestAgent: {
+    id: "agent-1",
+    name: "α-1",
+  },
 };
 
 export const DUMMY_ACTIVITY: ActivityItem[] = [
@@ -457,24 +460,28 @@ export const DUMMY_API_KEYS: ApiKey[] = [
   },
 ];
 
-export const DUMMY_NOTIFICATIONS: Notification[] = [
+export const DUMMY_NOTIFICATIONS: NotificationItem[] = [
   {
     id: "notif-1",
     type: "success",
+    category: "test_complete",
     title: "Backtest Complete",
     message: "α-1 finished backtest with +23.4% PnL",
-    timestamp: new Date(Date.now() - 2 * 60 * 60 * 1000),
-    read: false,
+    createdAt: new Date(Date.now() - 2 * 60 * 60 * 1000),
+    isRead: false,
     actionUrl: "/dashboard/results/result-27",
+    resultId: "result-27",
   },
   {
     id: "notif-2",
     type: "info",
+    category: "forward_session",
     title: "Forward Test Running",
     message: "α-1 is actively trading BTC/USDT",
-    timestamp: new Date(Date.now() - 4 * 60 * 60 * 1000),
-    read: true,
+    createdAt: new Date(Date.now() - 4 * 60 * 60 * 1000),
+    isRead: true,
     actionUrl: "/dashboard/arena/forward/session-1",
+    sessionId: "session-1",
   },
 ];
 

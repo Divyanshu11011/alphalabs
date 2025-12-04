@@ -1,6 +1,6 @@
 # AlphaLabs
 
-A monorepo project with Next.js frontend and Flask backend.
+A monorepo project with a Next.js frontend and FastAPI backend.
 
 ## Project Structure
 
@@ -49,9 +49,27 @@ Copy-Item env.example .env
 cp env.example .env
 ```
 
-4. Edit `.env` and add your OpenRouter API key:
+4. Edit `.env` and add the required secrets. At minimum you’ll need:
 ```
-OPENROUTER_API_KEY=your_api_key_here
+DATABASE_URL=postgres://...
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_KEY=your-service-role-key
+OPENROUTER_API_KEY=sk-...
+CLERK_SECRET_KEY=sk_test_...
+WEBSOCKET_BASE_URL=ws://localhost:5000
+CERTIFICATE_SHARE_BASE_URL=https://your-domain.example.com/verify
+CERTIFICATE_BUCKET=certificates
+EXPORT_BUCKET=exports
+```
+
+> See `backend/env.example` for the full list of supported variables.
+
+### 3. Frontend Setup
+
+Create a `frontend/.env.local` file so the Next.js app knows where to reach the API and websockets:
+```
+NEXT_PUBLIC_API_URL=http://localhost:5000
+NEXT_PUBLIC_WS_URL=ws://localhost:5000
 ```
 
 ### 3. Frontend Setup
@@ -109,7 +127,13 @@ python app.py
 
 - Frontend: http://localhost:3000
 - Backend API: http://localhost:5000
+- WebSocket Base: ws://localhost:5000
 - Backend Health: http://localhost:5000/api/health
+
+### Environment Reference
+
+- `backend/env.example` – all backend runtime variables (database, Supabase storage, Clerk, OpenRouter, websocket + storage buckets).
+- `frontend/.env.local` – browser-safe variables such as `NEXT_PUBLIC_API_URL` and `NEXT_PUBLIC_WS_URL`.
 
 ## Adding shadcn/ui Components
 

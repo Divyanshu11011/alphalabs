@@ -37,182 +37,102 @@ class DashboardService:
         """
         self.db = db
     
-    async def get_stats(
-        self,
-        user_id: UUID
-    ) -> Dict[str, Any]:
-        """
-        Get dashboard overview statistics.
-        
-        Aggregates key metrics including:
-        - Total agents (not archived)
-        - Total tests run
-        - Best PnL across all results
-        - Average win rate
-        - Trends (comparison to previous period)
-        - Best performing agent
-        
-        Args:
-            user_id: ID of the user
-            
-        Returns:
-            Dictionary with dashboard statistics
-        """
-        # Count total agents (not archived)
-        total_agents_result = await self.db.execute(
-            select(func.count(Agent.id))
-            .where(
-                Agent.user_id == user_id,
-                Agent.is_archived == False
-            )
-        )
-        total_agents = total_agents_result.scalar_one()
-        
-        # Count total tests run (completed test results)
-        tests_run_result = await self.db.execute(
-            select(func.count(TestResult.id))
-            .where(TestResult.user_id == user_id)
-        )
-        tests_run = tests_run_result.scalar_one()
-        
-        # Get best PnL
-        best_pnl_result = await self.db.execute(
-            select(func.max(TestResult.total_pnl_pct))
-            .where(TestResult.user_id == user_id)
-        )
-        best_pnl = best_pnl_result.scalar_one()
-        
-        # Get average win rate
-        avg_win_rate_result = await self.db.execute(
-            select(func.avg(TestResult.win_rate))
-            .where(TestResult.user_id == user_id)
-        )
-        avg_win_rate = avg_win_rate_result.scalar_one()
-        
-        # Calculate trends (compare last 30 days vs previous 30 days)
-        trends = await self._calculate_trends(user_id)
-        
-        # Get best performing agent
+    async def get_stats(self, user_id: UUID) -> Dict[str, Any]:
+        total_agents = await self._count_active_agents(user_id)
+        tests_run = await self._count_tests(user_id)
+        best_pnl = await self._best_pnl(user_id)
+        avg_win_rate = await self._avg_win_rate(user_id)
+        trends = await self._build_trends(user_id)
         best_agent = await self._get_best_agent(user_id)
         
         return {
             "total_agents": total_agents,
             "tests_run": tests_run,
-            "best_pnl": float(best_pnl) if best_pnl else None,
-            "avg_win_rate": float(avg_win_rate) if avg_win_rate else None,
+            "best_pnl": float(best_pnl) if best_pnl is not None else None,
+            "avg_win_rate": float(avg_win_rate) if avg_win_rate is not None else None,
             "trends": trends,
-            "best_agent": best_agent
+            "best_agent": best_agent,
         }
     
-    async def _calculate_trends(
-        self,
-        user_id: UUID
-    ) -> Dict[str, Any]:
-        """
-        Calculate trend metrics by comparing current period to previous period.
-        
-        Compares last 30 days vs previous 30 days for:
-        - Tests run
-        - Average PnL
-        - Win rate
-        
-        Args:
-            user_id: ID of the user
-            
-        Returns:
-            Dictionary with trend data
-        """
+    async def _build_trends(self, user_id: UUID) -> Dict[str, Any]:
         now = datetime.utcnow()
-        current_period_start = now - timedelta(days=30)
-        previous_period_start = now - timedelta(days=60)
-        
-        # Current period stats (last 30 days)
-        current_tests_result = await self.db.execute(
-            select(func.count(TestResult.id))
-            .where(
-                TestResult.user_id == user_id,
-                TestResult.created_at >= current_period_start
-            )
-        )
-        current_tests = current_tests_result.scalar_one()
-        
-        current_pnl_result = await self.db.execute(
-            select(func.avg(TestResult.total_pnl_pct))
-            .where(
-                TestResult.user_id == user_id,
-                TestResult.created_at >= current_period_start
-            )
-        )
-        current_avg_pnl = current_pnl_result.scalar_one()
-        
-        current_win_rate_result = await self.db.execute(
-            select(func.avg(TestResult.win_rate))
-            .where(
-                TestResult.user_id == user_id,
-                TestResult.created_at >= current_period_start
-            )
-        )
-        current_avg_win_rate = current_win_rate_result.scalar_one()
-        
-        # Previous period stats (30-60 days ago)
-        previous_tests_result = await self.db.execute(
-            select(func.count(TestResult.id))
-            .where(
-                TestResult.user_id == user_id,
-                TestResult.created_at >= previous_period_start,
-                TestResult.created_at < current_period_start
-            )
-        )
-        previous_tests = previous_tests_result.scalar_one()
-        
-        previous_pnl_result = await self.db.execute(
-            select(func.avg(TestResult.total_pnl_pct))
-            .where(
-                TestResult.user_id == user_id,
-                TestResult.created_at >= previous_period_start,
-                TestResult.created_at < current_period_start
-            )
-        )
-        previous_avg_pnl = previous_pnl_result.scalar_one()
-        
-        previous_win_rate_result = await self.db.execute(
-            select(func.avg(TestResult.win_rate))
-            .where(
-                TestResult.user_id == user_id,
-                TestResult.created_at >= previous_period_start,
-                TestResult.created_at < current_period_start
-            )
-        )
-        previous_avg_win_rate = previous_win_rate_result.scalar_one()
-        
-        # Calculate percentage changes
-        def calculate_change(current: Optional[float], previous: Optional[float]) -> Optional[float]:
-            """Calculate percentage change between two values."""
-            if current is None or previous is None or previous == 0:
-                return None
-            return ((current - previous) / abs(previous)) * 100
-        
-        tests_change = calculate_change(
-            float(current_tests) if current_tests else None,
-            float(previous_tests) if previous_tests else None
-        )
-        
-        pnl_change = calculate_change(
-            float(current_avg_pnl) if current_avg_pnl else None,
-            float(previous_avg_pnl) if previous_avg_pnl else None
-        )
-        
-        win_rate_change = calculate_change(
-            float(current_avg_win_rate) if current_avg_win_rate else None,
-            float(previous_avg_win_rate) if previous_avg_win_rate else None
-        )
-        
+        seven_days_ago = now - timedelta(days=7)
+        start_of_day = datetime(now.year, now.month, now.day)
+        agents_this_week = await self._count_new_agents(user_id, seven_days_ago)
+        tests_today = await self._count_tests_since(user_id, start_of_day)
+        win_rate_change = await self._win_rate_change(user_id)
         return {
-            "tests_run_change": tests_change,
-            "avg_pnl_change": pnl_change,
+            "agents_this_week": agents_this_week,
+            "tests_today": tests_today,
             "win_rate_change": win_rate_change,
-            "period_days": 30
         }
+
+    async def _win_rate_change(self, user_id: UUID) -> Optional[float]:
+        now = datetime.utcnow()
+        current_start = now - timedelta(days=30)
+        previous_start = now - timedelta(days=60)
+        current_win_rate = await self._avg_win_rate(user_id, current_start)
+        previous_win_rate = await self._avg_win_rate(user_id, previous_start, current_start)
+        if current_win_rate is None or previous_win_rate in (None, 0):
+            return None
+        previous = float(previous_win_rate)
+        if previous == 0:
+            return None
+        current = float(current_win_rate)
+        return round(((current - previous) / abs(previous)) * 100, 2)
+
+    async def _count_active_agents(self, user_id: UUID) -> int:
+        result = await self.db.execute(
+            select(func.count(Agent.id)).where(
+                Agent.user_id == user_id,
+                Agent.is_archived == False,
+            )
+        )
+        return result.scalar_one()
+
+    async def _count_tests(self, user_id: UUID) -> int:
+        result = await self.db.execute(
+            select(func.count(TestResult.id)).where(TestResult.user_id == user_id)
+        )
+        return result.scalar_one()
+
+    async def _best_pnl(self, user_id: UUID) -> Optional[Decimal]:
+        result = await self.db.execute(
+            select(func.max(TestResult.total_pnl_pct)).where(TestResult.user_id == user_id)
+        )
+        return result.scalar_one()
+
+    async def _avg_win_rate(
+        self,
+        user_id: UUID,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+    ) -> Optional[Decimal]:
+        query = select(func.avg(TestResult.win_rate)).where(TestResult.user_id == user_id)
+        if start_date:
+            query = query.where(TestResult.created_at >= start_date)
+        if end_date:
+            query = query.where(TestResult.created_at < end_date)
+        result = await self.db.execute(query)
+        return result.scalar_one()
+
+    async def _count_new_agents(self, user_id: UUID, since: datetime) -> int:
+        result = await self.db.execute(
+            select(func.count(Agent.id)).where(
+                Agent.user_id == user_id,
+                Agent.created_at >= since,
+            )
+        )
+        return result.scalar_one()
+
+    async def _count_tests_since(self, user_id: UUID, since: datetime) -> int:
+        result = await self.db.execute(
+            select(func.count(TestResult.id)).where(
+                TestResult.user_id == user_id,
+                TestResult.created_at >= since,
+            )
+        )
+        return result.scalar_one()
     
     async def _get_best_agent(
         self,
@@ -243,13 +163,8 @@ class DashboardService:
             return None
         
         return {
-            "id": str(agent.id),
+            "id": agent.id,
             "name": agent.name,
-            "mode": agent.mode,
-            "model": agent.model,
-            "best_pnl": float(agent.best_pnl) if agent.best_pnl else None,
-            "tests_run": agent.tests_run,
-            "avg_win_rate": float(agent.avg_win_rate) if agent.avg_win_rate else None
         }
     
     async def get_activity(
@@ -289,14 +204,20 @@ class DashboardService:
         # Format activity items
         activity_items = []
         for log in activity_logs:
+            action_url = None
+            if log.result_id:
+                action_url = f"/dashboard/results/{log.result_id}"
+            elif log.session_id:
+                action_url = f"/dashboard/arena/backtest/{log.session_id}"
             item = {
-                "id": str(log.id),
+                "id": log.id,
                 "type": log.activity_type,
                 "description": log.description,
-                "timestamp": log.created_at.isoformat(),
+                "timestamp": log.created_at,
                 "agent_name": log.agent.name if log.agent else None,
                 "pnl": float(log.result.total_pnl_pct) if log.result else None,
-                "result_id": str(log.result_id) if log.result_id else None
+                "result_id": log.result_id,
+                "action_url": action_url,
             }
             activity_items.append(item)
         

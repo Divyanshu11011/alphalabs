@@ -21,15 +21,16 @@ from uuid import UUID
 from database import get_db
 from dependencies import get_current_user
 from services.agent_service import AgentService
-from schemas.agent_schemas import AgentCreate, AgentUpdate, AgentResponse, AgentListResponse
+from schemas.agent_schemas import AgentCreate, AgentUpdate, AgentResponse, AgentListResponse, AgentDuplicateRequest
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
 
-@router.get("/", response_model=AgentListResponse)
+@router.get("", response_model=AgentListResponse)
 async def list_agents(
     skip: int = 0,
     limit: int = 100,
     include_archived: bool = False,
+    sort: Optional[str] = Query("newest", regex="^(newest|oldest|performance|tests|alpha)$"),
     current_user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -39,11 +40,12 @@ async def list_agents(
         user_id=current_user.id,
         skip=skip,
         limit=limit,
-        include_archived=include_archived
+        include_archived=include_archived,
+        sort=sort
     )
     return {"agents": agents, "total": len(agents)}
 
-@router.post("/", response_model=dict)
+@router.post("", response_model=dict)
 async def create_agent(
     agent_data: AgentCreate,
     current_user: dict = Depends(get_current_user),
@@ -114,10 +116,26 @@ async def delete_agent(
     action = "archived" if archive else "deleted"
     return {"message": f"Agent {action}", "id": agent_id}
 
+@router.post("/{agent_id}/restore", response_model=dict)
+async def restore_agent(
+    agent_id: UUID,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Restore an archived agent."""
+    service = AgentService(db)
+    success = await service.restore_agent(
+        user_id=current_user.id,
+        agent_id=agent_id
+    )
+    if not success:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    return {"message": "Agent restored", "id": agent_id}
+
 @router.post("/{agent_id}/duplicate", response_model=dict)
 async def duplicate_agent(
     agent_id: UUID,
-    new_name: str,
+    request: AgentDuplicateRequest,
     current_user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -127,7 +145,7 @@ async def duplicate_agent(
         new_agent = await service.duplicate_agent(
             user_id=current_user.id,
             agent_id=agent_id,
-            new_name=new_name
+            new_name=request.new_name
         )
         if not new_agent:
             raise HTTPException(status_code=404, detail="Agent not found")

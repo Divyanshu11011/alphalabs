@@ -81,6 +81,9 @@ class EventType:
     
     # Forward test specific
     COUNTDOWN_UPDATE = "countdown_update"
+    AUTO_STOP_TRIGGERED = "auto_stop_triggered"
+    INDICATOR_READINESS = "indicator_readiness"
+    PRICE_UPDATE = "price_update"  # Real-time price updates
     
     # Connection health
     HEARTBEAT = "heartbeat"
@@ -172,6 +175,17 @@ def create_countdown_update_event(seconds_remaining: int, next_candle_time: str)
         data={
             "seconds_remaining": seconds_remaining,
             "next_candle_time": next_candle_time
+        }
+    )
+
+
+def create_auto_stop_event(reason: str, stats: Dict[str, Any]) -> Event:
+    """Create an auto-stop triggered event."""
+    return Event(
+        type=EventType.AUTO_STOP_TRIGGERED,
+        data={
+            "reason": reason,
+            "stats": stats,
         }
     )
 

@@ -17,37 +17,31 @@ from decimal import Decimal
 from uuid import UUID
 
 
+class TrendStats(BaseModel):
+    agents_this_week: int = Field(..., description="Number of agents created in the last 7 days")
+    tests_today: int = Field(..., description="Number of tests completed since midnight UTC")
+    win_rate_change: Optional[float] = Field(
+        default=None,
+        description="Win rate change percentage versus previous 30-day period"
+    )
+
+
+class BestAgentSummary(BaseModel):
+    id: UUID
+    name: str
+
+
+class DashboardStats(BaseModel):
+    total_agents: int
+    tests_run: int
+    best_pnl: Optional[Decimal] = None
+    avg_win_rate: Optional[Decimal] = None
+    trends: TrendStats
+    best_agent: Optional[BestAgentSummary] = None
+
+
 class DashboardStatsResponse(BaseModel):
-    """
-    Schema for dashboard overview statistics.
-    
-    Contains aggregated metrics about user's agents, tests, and performance,
-    including trend comparisons and best performing agent information.
-    """
-    total_agents: int = Field(
-        ...,
-        description="Total number of active (non-archived) agents"
-    )
-    tests_run: int = Field(
-        ...,
-        description="Total number of tests executed"
-    )
-    best_pnl: Optional[Decimal] = Field(
-        default=None,
-        description="Best PnL percentage achieved across all tests"
-    )
-    avg_win_rate: Optional[Decimal] = Field(
-        default=None,
-        description="Average win rate across all tests"
-    )
-    trends: Dict[str, Any] = Field(
-        default_factory=dict,
-        description="Trend metrics comparing current period to previous period"
-    )
-    best_agent: Optional[Dict[str, Any]] = Field(
-        default=None,
-        description="Information about the best performing agent"
-    )
+    stats: DashboardStats
 
 
 class ActivityItem(BaseModel):
@@ -80,6 +74,10 @@ class ActivityItem(BaseModel):
     result_id: Optional[UUID] = Field(
         default=None,
         description="Test result ID if activity is test-related"
+    )
+    action_url: Optional[str] = Field(
+        default=None,
+        description="Primary action link associated with the activity"
     )
     timestamp: datetime = Field(
         ...,

@@ -29,7 +29,7 @@ Usage:
 """
 
 import logging
-from typing import Any
+from typing import Any, Optional
 from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -38,8 +38,13 @@ from services.market_data_service import Candle
 from services.trading.indicator_calculator import IndicatorCalculator
 from services.ai_trader import AIDecision
 from websocket.manager import WebSocketManager
+from services.trading.position_manager import Position
 
 logger = logging.getLogger(__name__)
+
+# Constants for indicator readiness thresholds
+INITIAL_READINESS_THRESHOLD = 0.8  # 80% for initial decision_start_index calculation
+RUNTIME_READINESS_THRESHOLD = 0.7  # 70% for runtime indicator readiness checks
 
 
 class CandleProcessor:
@@ -98,24 +103,73 @@ class CandleProcessor:
             candle: Current candle to process
             email_notifications: Whether to send email notifications
         """
-        candle_number = len(session_state.candles_processed)
+        # Add new candle to processed list first
+        session_state.candles_processed.append(candle)
+        candle_number = len(session_state.candles_processed) - 1  # 0-indexed for indicator calculator
         
         self.logger.info(
             f"Processing candle {candle_number}: "
             f"timestamp={candle.timestamp}, close={candle.close}"
         )
         
-        # Calculate indicators for current candle
-        # We need to create an indicator calculator with all processed candles
-        indicator_calculator = IndicatorCalculator(
-            candles=session_state.candles_processed,
-            enabled_indicators=session_state.agent.indicators,
-            mode=session_state.agent.mode,
-            custom_indicators=session_state.agent.custom_indicators
-        )
+        # Initialize indicator calculator if not already done (fallback for when historical fetch failed)
+        if session_state.indicator_calculator is None:
+            self.logger.warning(
+                f"Indicator calculator not initialized, creating with {len(session_state.candles_processed)} candles"
+            )
+            session_state.indicator_calculator = IndicatorCalculator(
+                candles=session_state.candles_processed,
+                enabled_indicators=session_state.agent.indicators,
+                mode=session_state.agent.mode,
+                custom_indicators=session_state.agent.custom_indicators,
+            )
+            
+            # Calculate decision_start_index if not already set
+            if session_state.decision_start_index == 0:
+                session_state.decision_start_index = session_state.indicator_calculator.find_first_ready_index(
+                    min_ready_percentage=INITIAL_READINESS_THRESHOLD
+                )
+                self.logger.info(
+                    f"Decision start index calculated: {session_state.decision_start_index} "
+                    f"(threshold: {INITIAL_READINESS_THRESHOLD * 100}%)"
+                )
+        else:
+            # Update indicator calculator with new candle
+            # Recreate calculator with all candles (including the new one)
+            # This ensures indicators are calculated correctly with full history
+            session_state.indicator_calculator = IndicatorCalculator(
+                candles=session_state.candles_processed,
+                enabled_indicators=session_state.agent.indicators,
+                mode=session_state.agent.mode,
+                custom_indicators=session_state.agent.custom_indicators,
+            )
         
         # Calculate indicators for the latest candle
-        indicators = indicator_calculator.calculate_all(len(session_state.candles_processed) - 1)
+        indicators = session_state.indicator_calculator.calculate_all(candle_number)
+        
+        # Check indicator readiness at runtime
+        indicators_ready = session_state.indicator_calculator.check_indicator_readiness(
+            candle_number,
+            min_ready_percentage=RUNTIME_READINESS_THRESHOLD
+        )
+        
+        # Log indicator readiness status
+        ready_count = sum(1 for v in indicators.values() if v is not None)
+        total_count = len(indicators)
+        ready_pct = (ready_count / total_count * 100) if total_count > 0 else 0
+        self.logger.info(
+            f"Indicator readiness: {ready_count}/{total_count} ({ready_pct:.1f}%) "
+            f"ready, threshold: {RUNTIME_READINESS_THRESHOLD * 100}%"
+        )
+        
+        # Broadcast indicator readiness event
+        await self.broadcaster.broadcast_indicator_readiness(
+            session_id,
+            ready_count,
+            total_count,
+            ready_pct,
+            indicators_ready
+        )
         
         # Broadcast candle event with indicators
         await self.broadcaster.broadcast_candle(session_id, candle, indicators, candle_number)
@@ -145,15 +199,64 @@ class CandleProcessor:
         position_state = session_state.position_manager.get_position()
         equity = session_state.position_manager.get_total_equity()
         
-        # Broadcast AI thinking event
-        await self.broadcaster.broadcast_ai_thinking(session_id)
+        # Determine if we should run AI decision based on readiness and cadence
+        is_decision_candle = self._is_decision_candle(session_state, candle_number)
+        past_start_index = candle_number >= session_state.decision_start_index
         
-        decision = await session_state.ai_trader.get_decision(
-            candle=candle,
-            indicators=indicators,
-            position_state=position_state,
-            equity=equity
+        should_run_ai = (
+            past_start_index
+            and indicators_ready
+            and is_decision_candle
         )
+        
+        # Log detailed LLM intervention decision criteria
+        self.logger.info(
+            f"LLM Intervention Decision for candle {candle_number}:\n"
+            f"  - candle_number >= decision_start_index: {past_start_index} "
+            f"(candle_number={candle_number}, decision_start_index={session_state.decision_start_index})\n"
+            f"  - indicators_ready: {indicators_ready} "
+            f"({ready_count}/{total_count} ready, threshold={RUNTIME_READINESS_THRESHOLD * 100}%)\n"
+            f"  - is_decision_candle: {is_decision_candle} "
+            f"(mode={getattr(session_state, 'decision_mode', 'every_candle')}, "
+            f"interval={getattr(session_state, 'decision_interval_candles', 1)})\n"
+            f"  - SHOULD_RUN_AI: {should_run_ai}"
+        )
+        
+        if should_run_ai:
+            # Broadcast AI thinking event
+            await self.broadcaster.broadcast_ai_thinking(session_id)
+            
+            decision = await session_state.ai_trader.get_decision(
+                candle=candle,
+                indicators=indicators,
+                position_state=position_state,
+                equity=equity
+            )
+        else:
+            # Build skip reasoning
+            if candle_number < session_state.decision_start_index:
+                reasoning = (
+                    f"Skipping AI decision for candle {candle_number} because "
+                    f"indicators are still warming up (decision_start_index="
+                    f"{session_state.decision_start_index})."
+                )
+            elif not indicators_ready:
+                reasoning = (
+                    f"Skipping AI decision for candle {candle_number} because "
+                    f"insufficient indicators are ready ({ready_count}/{total_count} ready, "
+                    f"need {RUNTIME_READINESS_THRESHOLD * 100}%)."
+                )
+            else:
+                reasoning = (
+                    f"Decision cadence ({session_state.decision_mode}) skipped candle {candle_number}"
+                )
+            
+            decision = AIDecision(
+                action="HOLD",
+                reasoning=reasoning,
+                size_percentage=0.0,
+                leverage=1,
+            )
         
         # Store AI thought
         ai_thought = {
@@ -194,7 +297,17 @@ class CandleProcessor:
         
         # Broadcast stats update
         stats = session_state.position_manager.get_stats()
+        self._record_equity_point(session_state, candle.timestamp, stats["current_equity"])
         await self.broadcaster.broadcast_stats_update(session_id, stats)
+        await self.database_manager.update_session_runtime_stats(
+            db=db,
+            session_id=session_id,
+            current_equity=stats["current_equity"],
+            current_pnl_pct=stats["equity_change_pct"],
+            max_drawdown_pct=session_state.max_drawdown_pct,
+            elapsed_seconds=self._compute_elapsed_seconds(session_state),
+            open_position=self._serialize_position(session_state.position_manager.get_position()),
+        )
     
     async def execute_decision(
         self,
@@ -254,6 +367,11 @@ class CandleProcessor:
                 )
                 return
             
+            leverage = decision.leverage or 1
+            if not session_state.allow_leverage:
+                leverage = 1
+            leverage = max(1, min(int(leverage), 5))
+            
             # Open position
             success = await session_state.position_manager.open_position(
                 action=action.lower(),
@@ -261,7 +379,7 @@ class CandleProcessor:
                 size_percentage=decision.size_percentage,
                 stop_loss=decision.stop_loss_price,
                 take_profit=decision.take_profit_price,
-                leverage=decision.leverage
+                leverage=leverage
             )
             
             if success:
@@ -276,3 +394,64 @@ class CandleProcessor:
                     decision.reasoning,
                     email_notifications
                 )
+
+    def _record_equity_point(self, session_state: Any, timestamp: datetime, equity: float) -> None:
+        point = {"time": timestamp.isoformat(), "value": equity}
+        if equity > session_state.peak_equity:
+            session_state.peak_equity = equity
+        drawdown = 0.0
+        if session_state.peak_equity:
+            drawdown = ((equity - session_state.peak_equity) / session_state.peak_equity) * 100
+        session_state.max_drawdown_pct = min(session_state.max_drawdown_pct, drawdown)
+        point["drawdown"] = drawdown
+        session_state.equity_curve.append(point)
+
+    def _serialize_position(self, position: Optional[Position]) -> Optional[dict]:
+        if not position:
+            return None
+        return {
+            "type": position.action,
+            "entry_price": position.entry_price,
+            "size": position.size,
+            "stop_loss": position.stop_loss,
+            "take_profit": position.take_profit,
+            "entry_time": position.entry_time.isoformat(),
+            "leverage": position.leverage,
+            "unrealized_pnl": position.unrealized_pnl,
+        }
+
+    def _compute_elapsed_seconds(self, session_state: Any) -> int:
+        if not session_state.started_at:
+            return 0
+        # Ensure both datetimes are timezone-aware
+        from datetime import timezone
+        now = datetime.now(timezone.utc)
+        started = session_state.started_at
+        # If started_at is naive, make it aware (shouldn't happen, but safety check)
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=timezone.utc)
+        return int((now - started).total_seconds())
+    
+    def _is_decision_candle(self, session_state: Any, candle_index: int) -> bool:
+        """
+        Determine if this candle should trigger an AI decision based on cadence settings.
+        
+        For 'every_candle': Always returns True (after warm-up period).
+        For 'every_n_candles': Returns True every N candles, counting from decision_start_index.
+        
+        Args:
+            session_state: Session state object
+            candle_index: Current candle index
+            
+        Returns:
+            True if this candle should trigger a decision, False otherwise
+        """
+        mode = getattr(session_state, "decision_mode", "every_candle")
+        if mode == "every_candle":
+            return True
+        if mode == "every_n_candles":
+            interval = getattr(session_state, "decision_interval_candles", 1) or 1
+            # Count from decision_start_index to avoid triggering during warm-up
+            elapsed = max(0, candle_index - session_state.decision_start_index)
+            return elapsed % interval == 0
+        return True

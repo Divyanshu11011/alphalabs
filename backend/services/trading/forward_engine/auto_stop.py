@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from services.market_data_service import Candle
 from websocket.manager import WebSocketManager
+from websocket.events import create_auto_stop_event
 
 logger = logging.getLogger(__name__)
 
@@ -132,3 +133,9 @@ class AutoStopManager:
             notification_manager = NotificationManager()
             
             await notification_manager.send_auto_stop_notification(session_state)
+        
+        stats = session_state.position_manager.get_stats()
+        await self.websocket_manager.broadcast_to_session(
+            session_id,
+            create_auto_stop_event("loss_threshold", stats)
+        )

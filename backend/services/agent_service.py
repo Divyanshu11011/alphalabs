@@ -14,7 +14,7 @@ Data Flow:
     - Outgoing: SQLAlchemy model instances (Agent) returned to the API layer.
 """
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update, delete, func, desc
+from sqlalchemy import select, update, delete, func, desc, nullslast
 from sqlalchemy.orm import joinedload
 from uuid import UUID
 from typing import List, Optional, Dict, Any
@@ -55,13 +55,12 @@ class AgentService:
         )
         return result.scalar_one()
 
-    async def get_agent(self, user_id: UUID, agent_id: UUID) -> Optional[Agent]:
+    async def get_agent(self, user_id: UUID, agent_id: UUID, include_archived: bool = False) -> Optional[Agent]:
         """Get a single agent by ID."""
-        result = await self.db.execute(
-            select(Agent)
-            .options(joinedload(Agent.api_key))
-            .where(Agent.id == agent_id, Agent.user_id == user_id)
-        )
+        query = select(Agent).options(joinedload(Agent.api_key)).where(Agent.id == agent_id, Agent.user_id == user_id)
+        if not include_archived:
+            query = query.where(Agent.is_archived == False)
+        result = await self.db.execute(query)
         return result.scalar_one_or_none()
 
     async def list_agents(
@@ -69,15 +68,36 @@ class AgentService:
         user_id: UUID, 
         skip: int = 0, 
         limit: int = 100,
-        include_archived: bool = False
+        include_archived: bool = False,
+        sort: str = "newest"
     ) -> List[Agent]:
         """List agents for a user."""
         query = select(Agent).options(joinedload(Agent.api_key)).where(Agent.user_id == user_id)
         
-        if not include_archived:
+        if include_archived:
+            # When showing archived, only show archived agents
+            query = query.where(Agent.is_archived == True)
+        else:
+            # When not showing archived, only show active agents
             query = query.where(Agent.is_archived == False)
+        
+        # Apply sorting based on sort parameter
+        if sort == "newest":
+            query = query.order_by(Agent.created_at.desc())
+        elif sort == "oldest":
+            query = query.order_by(Agent.created_at.asc())
+        elif sort == "performance":
+            # Sort by best_pnl descending (nulls last)
+            query = query.order_by(nullslast(desc(Agent.best_pnl)))
+        elif sort == "tests":
+            query = query.order_by(Agent.tests_run.desc())
+        elif sort == "alpha":
+            query = query.order_by(Agent.name.asc())
+        else:
+            # Default to newest
+            query = query.order_by(Agent.created_at.desc())
             
-        query = query.order_by(Agent.created_at.desc()).offset(skip).limit(limit)
+        query = query.offset(skip).limit(limit)
         
         result = await self.db.execute(query)
         return result.scalars().all()
@@ -119,6 +139,25 @@ class AgentService:
         else:
             agent.is_archived = True
         
+        await self.db.commit()
+        return True
+
+    async def restore_agent(self, user_id: UUID, agent_id: UUID) -> bool:
+        """Restore an archived agent."""
+        # Get agent including archived ones
+        result = await self.db.execute(
+            select(Agent)
+            .options(joinedload(Agent.api_key))
+            .where(Agent.id == agent_id, Agent.user_id == user_id)
+        )
+        agent = result.scalar_one_or_none()
+        if not agent:
+            return False
+        
+        if not agent.is_archived:
+            return True  # Already not archived
+        
+        agent.is_archived = False
         await self.db.commit()
         return True
 

@@ -21,7 +21,7 @@ from database import get_db
 from dependencies import get_current_user
 from services.notification_service import NotificationService
 from schemas.notification_schemas import (
-    NotificationResponse,
+    NotificationItem,
     NotificationListResponse,
     UnreadCountResponse
 )
@@ -30,7 +30,7 @@ from models import User
 router = APIRouter(prefix="/api/notifications", tags=["notifications"])
 
 
-@router.get("/", response_model=NotificationListResponse)
+@router.get("", response_model=NotificationListResponse)
 async def list_notifications(
     unread_only: bool = Query(False, description="Filter to show only unread notifications"),
     limit: int = Query(20, ge=1, le=100, description="Maximum number of notifications to return"),
@@ -51,29 +51,19 @@ async def list_notifications(
     service = NotificationService(db)
     
     try:
-        # Get notifications
-        notifications = await service.list_notifications(
+        notifications, total = await service.list_notifications(
             user_id=current_user.id,
             unread_only=unread_only,
             limit=limit,
             offset=offset
         )
         
-        # Get total unread count
         unread_count = await service.get_unread_count(user_id=current_user.id)
-        
-        # Calculate total count (for pagination)
-        # If filtering by unread, total = unread_count
-        # Otherwise, we need to count all notifications
-        if unread_only:
-            total = unread_count
-        else:
-            # For simplicity, we'll use the length of notifications if no offset
-            # In production, you'd want a separate count query
-            total = len(notifications) + offset
+        # Serialize notifications (now async)
+        serialized = [await service.serialize_notification(n) for n in notifications]
         
         return NotificationListResponse(
-            notifications=notifications,
+            notifications=serialized,
             total=total,
             unread_count=unread_count
         )
@@ -99,7 +89,7 @@ async def get_unread_count(
     try:
         unread_count = await service.get_unread_count(user_id=current_user.id)
         
-        return UnreadCountResponse(unread_count=unread_count)
+        return UnreadCountResponse(count=unread_count)
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -107,7 +97,7 @@ async def get_unread_count(
         )
 
 
-@router.post("/{notification_id}/read", response_model=NotificationResponse)
+@router.post("/{notification_id}/read", response_model=NotificationItem)
 async def mark_notification_as_read(
     notification_id: UUID,
     current_user: User = Depends(get_current_user),
@@ -133,7 +123,7 @@ async def mark_notification_as_read(
                 detail="Notification not found or does not belong to user"
             )
         
-        return notification
+        return await service.serialize_notification(notification)
     except HTTPException:
         raise
     except Exception as e:
