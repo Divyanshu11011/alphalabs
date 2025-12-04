@@ -1,4 +1,34 @@
 
+from datetime import datetime, timedelta
+from decimal import Decimal
+from typing import Optional, Tuple, Dict, List, Any, Set
+from uuid import UUID
+import uuid
+
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, func, case
+
+from database import get_db
+from schemas.arena_schemas import (
+    BacktestStartRequest, BacktestStartResponse, BacktestSessionResponse,
+    BacktestStatusResponse, PauseResponse, ResumeResponse, StopRequest, StopResponse,
+    OpenPosition, BacktestStatusWrapper,
+    ForwardStartRequest, ForwardStartResponse, ForwardSessionResponse,
+    ForwardActiveSession, ForwardActiveListResponse, ForwardStatusWrapper, ForwardStopResponse
+)
+from models.agent import Agent
+from models.arena import TestSession, Trade
+from models.result import TestResult
+from services.trading.backtest_engine import BacktestEngine
+from services.trading.forward_engine import ForwardEngine
+from services.trading.engine_factory import get_backtest_engine, get_forward_engine
+from config import settings
+from api.users import get_current_user
+
+router = APIRouter(prefix="/api/arena", tags=["arena"])
+
+
 @router.post("/forward/{id}/stop", response_model=ForwardStopResponse)
 async def stop_forward_test(
     id: UUID,
@@ -208,35 +238,6 @@ async def get_forward_active_sessions(
             )
         )
     
-    return {"sessions": sessions}
-from datetime import datetime, timedelta
-from decimal import Decimal
-from typing import Optional, Tuple, Dict, List, Any, Set
-from uuid import UUID
-import uuid
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, case
-
-from database import get_db, async_session_maker
-from schemas.arena_schemas import (
-    BacktestStartRequest, BacktestStartResponse, BacktestSessionResponse,
-    BacktestStatusResponse, PauseResponse, ResumeResponse, StopRequest, StopResponse,
-    OpenPosition, BacktestStatusWrapper,
-    ForwardStartRequest, ForwardStartResponse, ForwardSessionResponse,
-    ForwardActiveSession, ForwardActiveListResponse, ForwardStatusWrapper, ForwardStopResponse
-)
-from models.agent import Agent
-from models.arena import TestSession, Trade
-from models.result import TestResult
-from services.trading.backtest_engine import BacktestEngine
-from services.trading.forward_engine import ForwardEngine
-from websocket.manager import websocket_manager
-from config import settings
-from api.users import get_current_user
-
-router = APIRouter(prefix="/api/arena", tags=["arena"])
-
 # Historical presets (UTC)
 _DATE_PRESET_MAP = {
     "bull": (datetime(2023, 10, 1), datetime(2024, 3, 31)),
@@ -322,32 +323,6 @@ async def _get_trade_stats(db: AsyncSession, session_ids: List[UUID]) -> Dict[UU
         win_rate = (float(wins or 0) / total_trades * 100) if total_trades else 0.0
         stats[session_id] = (total_trades, win_rate)
     return stats
-
-# Singleton instance of BacktestEngine
-# Initialized lazily or on module load
-_backtest_engine: Optional[BacktestEngine] = None
-_forward_engine: Optional[ForwardEngine] = None
-
-def get_backtest_engine() -> BacktestEngine:
-    """Get or create the singleton BacktestEngine instance."""
-    global _backtest_engine
-    if _backtest_engine is None:
-        _backtest_engine = BacktestEngine(
-            session_factory=async_session_maker,
-            websocket_manager=websocket_manager
-        )
-    return _backtest_engine
-
-
-def get_forward_engine() -> ForwardEngine:
-    """Get or create the singleton ForwardEngine instance."""
-    global _forward_engine
-    if _forward_engine is None:
-        _forward_engine = ForwardEngine(
-            session_factory=async_session_maker,
-            websocket_manager=websocket_manager
-        )
-    return _forward_engine
 
 @router.post("/backtest/start", response_model=BacktestStartResponse)
 async def start_backtest(

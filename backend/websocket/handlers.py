@@ -19,7 +19,7 @@ from database import async_session_maker
 from models.arena import TestSession
 from websocket.events import create_error_event, create_heartbeat_event, Event
 from websocket.manager import websocket_manager
-from api.arena import get_backtest_engine, get_forward_engine
+from services.trading.engine_factory import get_backtest_engine, get_forward_engine
 
 logger = logging.getLogger(__name__)
 

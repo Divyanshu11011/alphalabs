@@ -188,9 +188,9 @@ class ForwardEngine:
                 
                 # Update session status to running
                 await self.database_manager.update_session_status(db, session_id, "running")
-            started_at = datetime.utcnow()
-            session_state.started_at = started_at
-            await self.database_manager.update_session_started_at(db, session_id, started_at)
+                started_at = datetime.utcnow()
+                session_state.started_at = started_at
+                await self.database_manager.update_session_started_at(db, session_id, started_at)
                 
                 # Broadcast session initialized event
                 await self.broadcaster.broadcast_session_initialized(
