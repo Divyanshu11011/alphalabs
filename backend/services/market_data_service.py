@@ -24,7 +24,8 @@ Usage:
     )
 """
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from dateutil import parser
 from decimal import Decimal
 from typing import Dict, List, Optional, Tuple, Any
 import hashlib
@@ -445,58 +446,192 @@ class MarketDataService:
             # No cache available, re-raise exception
             raise
     
+    async def get_current_price(self, asset: str) -> Optional[Dict[str, float]]:
+        """
+        Get the current real-time price for an asset from Binance API.
+        
+        Uses Binance REST API for live market data.
+        
+        Args:
+            asset: Trading asset (e.g., 'BTC/USDT')
+            
+        Returns:
+            Dict with current price data: {
+                'price': float,
+                'high_24h': float,
+                'low_24h': float,
+                'volume_24h': float,
+                'change_24h': float,
+                'change_pct_24h': float
+            } or None if unavailable
+        """
+        # Get Binance symbol (e.g., BTC/USDT -> BTCUSDT)
+        asset_info = self.ASSET_CATALOG.get(asset.upper())
+        if not asset_info:
+            logger.warning(f"Unknown asset: {asset}")
+            return None
+        
+        binance_symbol = asset_info.get('binance_symbol')
+        if not binance_symbol:
+            logger.warning(f"No Binance symbol for {asset}")
+            return None
+        
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                # Binance 24hr ticker endpoint
+                response = await client.get(
+                    "https://api.binance.com/api/v3/ticker/24hr",
+                    params={"symbol": binance_symbol}
+                )
+                response.raise_for_status()
+                data = response.json()
+                
+                # Log the full ticker response for debugging
+                logger.info(
+                    f"Binance ticker response for {asset} ({binance_symbol}): {data}"
+                )
+                
+                current_price = float(data.get("lastPrice", 0))
+                if current_price == 0:
+                    raise ValueError("Invalid price from Binance")
+                
+                high_24h = float(data.get("highPrice", current_price))
+                low_24h = float(data.get("lowPrice", current_price))
+                volume_24h = float(data.get("volume", 0))
+                price_change = float(data.get("priceChange", 0))
+                price_change_pct = float(data.get("priceChangePercent", 0))
+                
+                return {
+                    'price': current_price,
+                    'high_24h': high_24h,
+                    'low_24h': low_24h,
+                    'volume_24h': volume_24h,
+                    'change_24h': price_change,
+                    'change_pct_24h': price_change_pct,
+                }
+        except Exception as e:
+            logger.error(f"Error fetching current price from Binance for {asset}: {e}")
+            return None
+    
+    async def get_historical_candles_binance(
+        self,
+        asset: str,
+        timeframe: str,
+        limit: int = 500
+    ) -> List[Candle]:
+        """
+        Fetch historical candles from Binance API.
+        
+        Args:
+            asset: Trading asset (e.g., 'BTC/USDT')
+            timeframe: Timeframe (e.g., '1h', '15m', '1d')
+            limit: Number of candles to fetch (max 1000, default: 500)
+            
+        Returns:
+            List of Candle objects sorted by timestamp (oldest first)
+        """
+        # Get Binance symbol and interval
+        asset_info = self.ASSET_CATALOG.get(asset.upper())
+        if not asset_info:
+            logger.warning(f"Unknown asset: {asset}")
+            return []
+        
+        binance_symbol = asset_info.get('binance_symbol')
+        if not binance_symbol:
+            logger.warning(f"No Binance symbol for {asset}")
+            return []
+        
+        # Map timeframe to Binance interval
+        interval_map = {
+            '1m': '1m', '3m': '3m', '5m': '5m', '15m': '15m', '30m': '30m',
+            '1h': '1h', '2h': '2h', '4h': '4h', '6h': '6h', '8h': '8h', '12h': '12h',
+            '1d': '1d', '3d': '3d', '1w': '1w', '1M': '1M'
+        }
+        binance_interval = interval_map.get(timeframe.lower(), '1h')
+        
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                # Binance klines endpoint
+                response = await client.get(
+                    "https://api.binance.com/api/v3/klines",
+                    params={
+                        "symbol": binance_symbol,
+                        "interval": binance_interval,
+                        "limit": min(limit, 1000)  # Binance max is 1000
+                    }
+                )
+                response.raise_for_status()
+                klines = response.json()
+                
+                if not klines:
+                    logger.warning(f"No historical data from Binance for {asset}")
+                    return []
+                
+                # Convert Binance klines to Candle objects
+                # Binance format: [open_time, open, high, low, close, volume, close_time, ...]
+                candles = []
+                for kline in klines:
+                    try:
+                        open_time_ms = int(kline[0])
+                        timestamp = datetime.fromtimestamp(open_time_ms / 1000, tz=timezone.utc)
+                        
+                        candle = Candle(
+                            timestamp=timestamp,
+                            open=float(kline[1]),
+                            high=float(kline[2]),
+                            low=float(kline[3]),
+                            close=float(kline[4]),
+                            volume=float(kline[5])
+                        )
+                        candles.append(candle)
+                    except Exception as e:
+                        logger.debug(f"Error parsing Binance kline: {e}")
+                        continue
+                
+                # Sort by timestamp (oldest first) - Binance already returns sorted, but just in case
+                candles.sort(key=lambda c: c.timestamp)
+                
+                logger.info(f"Fetched {len(candles)} historical candles from Binance for {asset} {timeframe}")
+                return candles
+                
+        except Exception as e:
+            logger.error(f"Error fetching historical data from Binance for {asset}: {e}")
+            return []
+    
     async def get_latest_candle(
         self,
         asset: str,
         timeframe: str
-    ) -> Candle:
+    ) -> Optional[Candle]:
         """
-        Get the most recent closed candle.
+        Get the most recent closed candle using Binance API.
         
-        Fetches the latest completed candlestick for the specified
-        asset and timeframe. Used for forward testing to get real-time data.
+        For forward testing, fetches the latest closed candle from Binance.
         
         Args:
             asset: Trading asset (e.g., 'BTC/USDT')
             timeframe: Candlestick timeframe (e.g., '1h')
             
         Returns:
-            Candle: Most recent closed candle
-            
-        Raises:
-            ValueError: If parameters are invalid
-            Exception: If data fetch fails
-            
-        Example:
-            latest = await service.get_latest_candle("BTC/USDT", "1h")
-            print(f"Latest BTC price: ${latest.close:,.2f}")
+            Candle: Most recent closed candle or None
         """
-        # Validate parameters
-        if asset not in self.ASSET_TICKER_MAP:
-            supported = ', '.join(self.ASSET_TICKER_MAP.keys())
-            raise ValueError(
-                f"Unsupported asset '{asset}'. Supported: {supported}"
+        try:
+            # Fetch last 2 candles from Binance to ensure we get a closed one
+            candles = await self.get_historical_candles_binance(
+                asset,
+                timeframe,
+                limit=2
             )
-        
-        if timeframe not in self.TIMEFRAME_INTERVAL_MAP:
-            supported = ', '.join(self.TIMEFRAME_INTERVAL_MAP.keys())
-            raise ValueError(
-                f"Unsupported timeframe '{timeframe}'. Supported: {supported}"
-            )
-        
-        # Fetch recent data (last 2 candles to ensure we get a closed one)
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=2)  # Get enough data
-        
-        candles = await self.get_historical_data(
-            asset, timeframe, start_date, end_date
-        )
-        
-        if not candles:
-            raise Exception(f"No data available for {asset} {timeframe}")
-        
-        # Return the most recent candle
-        return candles[-1]
+            
+            if not candles or len(candles) == 0:
+                logger.warning(f"No candles available for {asset} {timeframe}")
+                return None
+            
+            # Return the most recent (last) candle
+            return candles[-1]
+        except Exception as e:
+            logger.error(f"Error getting latest candle from Binance for {asset}: {e}")
+            return None
     
     async def _load_from_db_cache(
         self,
@@ -620,8 +755,25 @@ class MarketDataService:
     ) -> List[Candle]:
         """
         Fetch candlestick data from external providers with fallbacks.
+        
+        For crypto assets, tries FreeCryptoAPI first (free, real-time).
+        Falls back to Binance REST API, then yfinance.
         """
         metadata = self.ASSET_CATALOG.get(asset, {})
+        
+        # Check if it's a crypto asset (has /USDT or /USD)
+        is_crypto = '/' in asset and asset.split('/')[1] in ['USDT', 'USD', 'BTC', 'ETH']
+        
+        # For crypto, try FreeCryptoAPI first (only for daily timeframe)
+        if is_crypto and timeframe == '1d':
+            try:
+                return await self._fetch_from_freecryptoapi(asset, timeframe, start_date, end_date)
+            except Exception as exc:
+                logger.warning(
+                    f"FreeCryptoAPI failed for {asset} {timeframe}: {exc}, trying fallback"
+                )
+        
+        # Fallback to configured sources
         preferred_sources = metadata.get('sources', ['yfinance'])
         last_error: Optional[Exception] = None
         
@@ -788,6 +940,87 @@ class MarketDataService:
             "Successfully fetched %s candles from Binance", len(candles)
         )
         return candles
+    
+    async def _fetch_from_freecryptoapi(
+        self,
+        asset: str,
+        timeframe: str,
+        start_date: datetime,
+        end_date: datetime
+    ) -> List[Candle]:
+        """
+        Fetch historical OHLC data from FreeCryptoAPI.
+        
+        Note: FreeCryptoAPI getOHLC returns daily candles only.
+        For intraday timeframes (15m, 1h, 4h), we'll need to use fallback.
+        
+        Args:
+            asset: Trading asset (e.g., 'BTC/USDT')
+            timeframe: Timeframe (only '1d' is supported by FreeCryptoAPI OHLC)
+            start_date: Start date
+            end_date: End date
+            
+        Returns:
+            List[Candle]: Historical candlestick data
+        """
+        # Extract base symbol (BTC from BTC/USDT)
+        base_symbol = asset.split('/')[0] if '/' in asset else asset
+        
+        # FreeCryptoAPI getOHLC only supports daily candles
+        if timeframe != '1d':
+            raise Exception(f"FreeCryptoAPI getOHLC only supports daily (1d) timeframe, got {timeframe}")
+        
+        try:
+            async with httpx.AsyncClient(timeout=settings.MARKET_DATA_TIMEOUT) as client:
+                # Use getOHLC endpoint for historical data
+                response = await client.get(
+                    "https://api.freecryptoapi.com/v1/getOHLC",
+                    params={
+                        "symbol": base_symbol,
+                        "start_date": start_date.strftime("%Y-%m-%d"),
+                        "end_date": end_date.strftime("%Y-%m-%d"),
+                        "apikey": "ohy9ctcu1pkbiciq4rzt"
+                    },
+                )
+                response.raise_for_status()
+                data = response.json()
+                
+                if not data.get("status") or not data.get("result"):
+                    raise Exception(f"No data returned from FreeCryptoAPI for {base_symbol}")
+                
+                candles: List[Candle] = []
+                for entry in data["result"]:
+                    # Parse timestamp
+                    time_close_str = entry.get("time_close", "")
+                    if time_close_str:
+                        try:
+                            timestamp = datetime.strptime(time_close_str, "%Y-%m-%d %H:%M:%S")
+                        except ValueError:
+                            # Try date-only format
+                            timestamp = datetime.strptime(time_close_str.split()[0], "%Y-%m-%d")
+                    else:
+                        # Fallback to end_date if no timestamp
+                        timestamp = end_date
+                    
+                    candles.append(
+                        Candle(
+                            timestamp=timestamp,
+                            open=float(entry.get("open", 0)),
+                            high=float(entry.get("high", 0)),
+                            low=float(entry.get("low", 0)),
+                            close=float(entry.get("close", 0)),
+                            volume=0.0,  # FreeCryptoAPI OHLC doesn't include volume
+                        )
+                    )
+                
+                logger.info(
+                    f"Successfully fetched {len(candles)} candles from FreeCryptoAPI for {base_symbol}"
+                )
+                return candles
+                
+        except Exception as e:
+            logger.error(f"Error fetching from FreeCryptoAPI for {asset}: {e}")
+            raise
     
     async def _cache_to_db(
         self,

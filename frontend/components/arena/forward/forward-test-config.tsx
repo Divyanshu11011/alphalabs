@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Play, Bot, DollarSign, Shield, Bell, CheckCircle, XCircle, ArrowRight } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
@@ -19,18 +19,9 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { useAgentsStore, useArenaStore } from "@/lib/stores";
-
-const assets = [
-  { id: "btc-usdt", name: "BTC/USDT", icon: "₿" },
-  { id: "eth-usdt", name: "ETH/USDT", icon: "Ξ" },
-  { id: "sol-usdt", name: "SOL/USDT", icon: "◎" },
-];
-
-const timeframes = [
-  { id: "15m", name: "15 Minutes" },
-  { id: "1h", name: "1 Hour" },
-  { id: "4h", name: "4 Hours" },
-];
+import { useApiClient } from "@/lib/api";
+import { useArenaApi } from "@/hooks/use-arena-api";
+import type { Asset, Timeframe } from "@/types/arena";
 
 // Mock active sessions
 const mockActiveSessions: Array<{
@@ -49,6 +40,15 @@ export function ForwardTestConfig() {
   // Get agents from store
   const { agents } = useAgentsStore();
   const { setForwardConfig } = useArenaStore();
+  const { get } = useApiClient();
+  const { startForwardTest } = useArenaApi();
+
+  const [assets, setAssets] = useState<Asset[]>([]);
+  const [timeframes, setTimeframes] = useState<Timeframe[]>([]);
+  const [isLoadingConfig, setIsLoadingConfig] = useState(true);
+  const [configError, setConfigError] = useState<string | null>(null);
+  const [isStarting, setIsStarting] = useState(false);
+  const [startError, setStartError] = useState<string | null>(null);
 
   const [config, setConfig] = useState({
     agentId: preselectedAgent || "",
@@ -58,27 +58,88 @@ export function ForwardTestConfig() {
     safetyMode: true,
     emailNotifications: false,
     autoStopOnLoss: false,
+    decisionMode: "every_candle" as "every_candle" | "every_n_candles",
+    decisionInterval: "1",
   });
 
   const selectedAgent = agents.find((a) => a.id === config.agentId);
   // Check if agent has at least one profitable backtest
   const profitableTests = selectedAgent?.stats.profitableTests ?? 0;
+  const configReady = !isLoadingConfig && assets.length > 0 && timeframes.length > 0;
   const canForwardTest = selectedAgent && profitableTests > 0;
+  const canStartForward = canForwardTest && configReady && !isStarting;
 
-  const handleStartTest = () => {
-    // Save config to store before navigating
-    setForwardConfig({
-      agentId: config.agentId,
-      asset: config.asset,
-      timeframe: config.timeframe as "15m" | "1h" | "4h",
-      capital: parseInt(config.capital),
-      safetyMode: config.safetyMode,
-      emailNotifications: config.emailNotifications,
-      autoStopOnLoss: config.autoStopOnLoss,
-    });
-    
-    const sessionId = Math.random().toString(36).substring(7);
-    router.push(`/dashboard/arena/forward/${sessionId}`);
+  useEffect(() => {
+    let active = true;
+    setIsLoadingConfig(true);
+    setConfigError(null);
+
+    void Promise.all([
+      get<{ assets: Asset[] }>("/api/data/assets"),
+      get<{ timeframes: Timeframe[] }>("/api/data/timeframes"),
+    ])
+      .then(([assetsRes, timeframesRes]) => {
+        if (!active) return;
+        setAssets(assetsRes.assets);
+        setTimeframes(timeframesRes.timeframes);
+        if (!assetsRes.assets.length && !config.asset) {
+          setConfig((prev) => ({ ...prev, asset: assetsRes.assets[0]?.id ?? prev.asset }));
+        }
+        if (!timeframesRes.timeframes.length && !config.timeframe) {
+          setConfig((prev) => ({ ...prev, timeframe: timeframesRes.timeframes[0]?.id ?? prev.timeframe }));
+        }
+      })
+      .catch((err) => {
+        if (!active) return;
+        setConfigError(err instanceof Error ? err.message : "Failed to load arena config");
+      })
+      .finally(() => {
+        if (!active) return;
+        setIsLoadingConfig(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [get]);
+
+  const handleStartTest = async () => {
+    if (!config.agentId || isStarting) return;
+
+    setIsStarting(true);
+    setStartError(null);
+
+    try {
+      const response = await startForwardTest({
+        agent_id: config.agentId,
+        asset: config.asset,
+        timeframe: config.timeframe,
+        starting_capital: parseInt(config.capital, 10),
+        safety_mode: config.safetyMode,
+        email_notifications: config.emailNotifications,
+        auto_stop_on_loss: config.autoStopOnLoss,
+        auto_stop_loss_pct: config.autoStopOnLoss ? 10 : 0,
+        allow_leverage: false,
+        decision_mode: config.decisionMode,
+        decision_interval_candles: Number(config.decisionInterval || "1"),
+      });
+
+      setForwardConfig({
+        agentId: config.agentId,
+        asset: config.asset,
+        timeframe: config.timeframe,
+        capital: parseInt(config.capital, 10),
+        safetyMode: config.safetyMode,
+        emailNotifications: config.emailNotifications,
+        autoStopOnLoss: config.autoStopOnLoss,
+      });
+
+      router.push(`/dashboard/arena/forward/${response.id}`);
+    } catch (err) {
+      setStartError(err instanceof Error ? err.message : "Failed to start forward test");
+    } finally {
+      setIsStarting(false);
+    }
   };
 
   return (
@@ -101,6 +162,11 @@ export function ForwardTestConfig() {
           LIVE DATA
         </Badge>
       </div>
+      {configError && (
+        <div className="rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
+          {configError}
+        </div>
+      )}
 
       {/* Agent Selection - Compact */}
       <Card className="border-border/50 bg-gradient-to-r from-[hsl(var(--accent-green)/0.05)] to-transparent">
@@ -211,11 +277,17 @@ export function ForwardTestConfig() {
                       <AnimatedSelectValue />
                     </AnimatedSelectTrigger>
                     <AnimatedSelectContent>
-                      {assets.map((asset) => (
-                        <AnimatedSelectItem key={asset.id} value={asset.id} textValue={asset.name}>
-                          {asset.icon} {asset.name}
+                      {assets.length === 0 ? (
+                        <AnimatedSelectItem value="" disabled>
+                          Loading assets...
                         </AnimatedSelectItem>
-                      ))}
+                      ) : (
+                        assets.map((asset) => (
+                          <AnimatedSelectItem key={asset.id} value={asset.id} textValue={asset.name}>
+                            {asset.icon} {asset.name}
+                          </AnimatedSelectItem>
+                        ))
+                      )}
                     </AnimatedSelectContent>
                   </AnimatedSelect>
                 </div>
@@ -230,11 +302,17 @@ export function ForwardTestConfig() {
                       <AnimatedSelectValue />
                     </AnimatedSelectTrigger>
                     <AnimatedSelectContent>
-                      {timeframes.map((tf) => (
-                        <AnimatedSelectItem key={tf.id} value={tf.id} textValue={tf.name}>
-                          {tf.name}
+                      {timeframes.length === 0 ? (
+                        <AnimatedSelectItem value="" disabled>
+                          Loading timeframes...
                         </AnimatedSelectItem>
-                      ))}
+                      ) : (
+                        timeframes.map((tf) => (
+                          <AnimatedSelectItem key={tf.id} value={tf.id} textValue={tf.name}>
+                            {tf.name}
+                          </AnimatedSelectItem>
+                        ))
+                      )}
                     </AnimatedSelectContent>
                   </AnimatedSelect>
                 </div>
@@ -306,6 +384,43 @@ export function ForwardTestConfig() {
                   </Label>
                 </div>
               </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-xs">Decision Cadence</Label>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  variant={config.decisionMode === "every_candle" ? "secondary" : "outline"}
+                  size="sm"
+                  className="text-[10px] px-3 h-8"
+                  onClick={() => setConfig({ ...config, decisionMode: "every_candle" })}
+                >
+                  Every candle
+                </Button>
+                <Button
+                  variant={config.decisionMode === "every_n_candles" ? "secondary" : "outline"}
+                  size="sm"
+                  className="text-[10px] px-3 h-8"
+                  onClick={() => setConfig({ ...config, decisionMode: "every_n_candles" })}
+                >
+                  Every N candles
+                </Button>
+              </div>
+              {config.decisionMode === "every_n_candles" && (
+                <div className="flex flex-col gap-1">
+                  <Input
+                    type="number"
+                    min={1}
+                    value={config.decisionInterval}
+                    onChange={(e) => setConfig({ ...config, decisionInterval: e.target.value })}
+                    className="h-8 text-sm"
+                    placeholder="Interval (e.g., 4)"
+                  />
+                  <p className="text-[10px] text-muted-foreground">
+                    Enter how many candles between AI interventions (e.g., 4 means every 4th candle).
+                  </p>
+                </div>
+              )}
+            </div>
             </CardContent>
           </Card>
 
@@ -324,13 +439,13 @@ export function ForwardTestConfig() {
                 <div className="rounded-lg border border-border/50 bg-muted/20 p-2">
                   <p className="text-[10px] text-muted-foreground">Asset</p>
                   <p className="font-mono text-xs font-medium">
-                    {assets.find((a) => a.id === config.asset)?.name}
+                  {assets.find((a) => a.id === config.asset)?.name ?? "—"}
                   </p>
                 </div>
                 <div className="rounded-lg border border-border/50 bg-muted/20 p-2">
                   <p className="text-[10px] text-muted-foreground">Timeframe</p>
                   <p className="font-mono text-xs font-medium">
-                    {timeframes.find((t) => t.id === config.timeframe)?.name}
+                  {timeframes.find((t) => t.id === config.timeframe)?.name ?? "—"}
                   </p>
                 </div>
                 <div className="rounded-lg border border-border/50 bg-muted/20 p-2">
@@ -349,12 +464,22 @@ export function ForwardTestConfig() {
               {/* Start Button */}
               <Button
                 className="w-full h-9 gap-2 text-sm bg-[hsl(var(--accent-green))] text-black hover:bg-[hsl(var(--accent-green))]/90"
-                disabled={!canForwardTest}
+                disabled={!canStartForward}
                 onClick={handleStartTest}
               >
                 <Play className="h-4 w-4" />
-                Start Forward Test
+                {isStarting ? "Starting…" : "Start Forward Test"}
               </Button>
+              {startError && (
+                <p className="mt-2 text-[10px] text-destructive text-center">
+                  {startError}
+                </p>
+              )}
+              {!configReady && (
+                <p className="mt-2 text-[10px] text-muted-foreground text-center">
+                  Loading arena configuration...
+                </p>
+              )}
 
               {!canForwardTest && selectedAgent && (
                 <p className="text-center text-[10px] text-[hsl(var(--accent-red))]">

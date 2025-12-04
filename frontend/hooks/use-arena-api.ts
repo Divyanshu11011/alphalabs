@@ -1,6 +1,7 @@
 import { useCallback } from "react";
 import { useApiClient } from "@/lib/api";
 import type { CandleData } from "@/types";
+import type { ForwardStatusResponse } from "@/types/arena";
 
 interface BacktestStartPayload {
   agent_id: string;
@@ -28,6 +29,8 @@ interface ForwardStartPayload {
   auto_stop_on_loss: boolean;
   auto_stop_loss_pct: number;
   allow_leverage: boolean;
+  decision_mode: "every_candle" | "every_n_candles";
+  decision_interval_candles: number;
 }
 
 interface CandleDto {
@@ -144,10 +147,21 @@ export function useArenaApi() {
     [get]
   );
 
+  const getForwardStatus = useCallback(
+    async (sessionId: string) => {
+      const response = await get<{ session: ForwardStatusResponse }>(
+        `/api/arena/forward/${sessionId}`
+      );
+      return response.session;
+    },
+    [get]
+  );
+
   return {
     startBacktest,
     startForwardTest,
     getBacktestStatus,
+    getForwardStatus,
   };
 }
 

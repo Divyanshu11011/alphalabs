@@ -1,5 +1,5 @@
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Optional, Tuple, Dict, List, Any, Set
 from uuid import UUID
@@ -30,6 +30,7 @@ from services.market_data_service import MarketDataService
 from services.notification_service import NotificationService
 from config import settings
 from api.users import get_current_user
+from exceptions import ValidationError
 
 router = APIRouter(prefix="/api/arena", tags=["arena"])
 logger = logging.getLogger(__name__)
@@ -76,6 +77,118 @@ async def stop_forward_test(
         "final_pnl": final_pnl,
         "position_closed": position_closed
     }
+
+
+@router.post("/forward/{id}/pause", response_model=PauseResponse)
+async def pause_forward_test(
+    id: UUID,
+    current_user: dict = Depends(get_current_user),
+    engine: ForwardEngine = Depends(get_forward_engine),
+    db: AsyncSession = Depends(get_db)
+):
+    """Pause a forward test."""
+    session_stmt = await db.execute(
+        select(TestSession).where(
+            TestSession.id == id,
+            TestSession.user_id == current_user.id,
+            TestSession.type == "forward"
+        )
+    )
+    session = session_stmt.scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    await engine.pause_forward_test(str(id))
+    return PauseResponse(
+        session_id=id,
+        status="paused",
+        paused_at=datetime.now(timezone.utc)
+    )
+
+
+@router.post("/forward/{id}/resume", response_model=ResumeResponse)
+async def resume_forward_test(
+    id: UUID,
+    current_user: dict = Depends(get_current_user),
+    engine: ForwardEngine = Depends(get_forward_engine),
+    db: AsyncSession = Depends(get_db)
+):
+    """Resume a paused forward test."""
+    session_stmt = await db.execute(
+        select(TestSession).where(
+            TestSession.id == id,
+            TestSession.user_id == current_user.id,
+            TestSession.type == "forward"
+        )
+    )
+    session = session_stmt.scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    await engine.resume_forward_test(str(id))
+    return ResumeResponse(
+        session_id=id,
+        status="running"
+    )
+
+@router.post("/forward/{id}/pause", response_model=PauseResponse)
+async def pause_forward_test(
+    id: UUID,
+    current_user: dict = Depends(get_current_user),
+    engine: ForwardEngine = Depends(get_forward_engine),
+    db: AsyncSession = Depends(get_db)
+):
+    """Pause a forward test."""
+    session_stmt = await db.execute(
+        select(TestSession).where(
+            TestSession.id == id,
+            TestSession.user_id == current_user.id,
+            TestSession.type == "forward"
+        )
+    )
+    session = session_stmt.scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    try:
+        await engine.pause_forward_test(str(id))
+    except ValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    return {
+        "session_id": id,
+        "status": "paused",
+        "paused_at": datetime.now(timezone.utc)
+    }
+
+@router.post("/forward/{id}/resume", response_model=ResumeResponse)
+async def resume_forward_test(
+    id: UUID,
+    current_user: dict = Depends(get_current_user),
+    engine: ForwardEngine = Depends(get_forward_engine),
+    db: AsyncSession = Depends(get_db)
+):
+    """Resume a paused forward test."""
+    session_stmt = await db.execute(
+        select(TestSession).where(
+            TestSession.id == id,
+            TestSession.user_id == current_user.id,
+            TestSession.type == "forward"
+        )
+    )
+    session = session_stmt.scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    try:
+        await engine.resume_forward_test(str(id))
+    except ValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    return {
+        "session_id": id,
+        "status": "running"
+    }
 @router.get("/forward/active", response_model=ForwardActiveListResponse)
 async def get_forward_active_sessions(
     db: AsyncSession = Depends(get_db),
@@ -90,7 +203,7 @@ async def get_forward_active_sessions(
     """List active forward sessions."""
     sessions: List[ForwardActiveSession] = []
     seen_ids: Set[UUID] = set()
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     
     for session_id_str, state in engine.active_sessions.items():
         if state.agent.user_id != current_user.id:
@@ -172,21 +285,34 @@ async def get_forward_status(
 ):
     """Get status for a forward session."""
     session_state = engine.active_sessions.get(str(id))
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     
     if session_state and session_state.agent.user_id == current_user.id:
         stats = session_state.position_manager.get_stats()
         open_pos = _serialize_open_position(session_state.position_manager.get_position())
-        elapsed_seconds = int((now - session_state.started_at).total_seconds()) if session_state.started_at else 0
+        if session_state.started_at:
+            # Ensure both datetimes are timezone-aware for comparison
+            started_at = session_state.started_at
+            if started_at.tzinfo is None:
+                started_at = started_at.replace(tzinfo=timezone.utc)
+            elapsed_seconds = int((now - started_at).total_seconds())
+        else:
+            elapsed_seconds = 0
         next_eta = None
         if session_state.next_candle_time:
-            next_eta = max(0, int((session_state.next_candle_time - now).total_seconds()))
+            # Ensure both datetimes are timezone-aware for comparison
+            next_candle_time = session_state.next_candle_time
+            if next_candle_time.tzinfo is None:
+                next_candle_time = next_candle_time.replace(tzinfo=timezone.utc)
+            next_eta = max(0, int((next_candle_time - now).total_seconds()))
         return {
             "session": {
                 "id": id,
                 "status": "running" if not session_state.is_paused else "paused",
                 "started_at": session_state.started_at,
                 "elapsed_seconds": elapsed_seconds,
+                "asset": session_state.asset,
+                "timeframe": session_state.timeframe,
                 "current_equity": stats["current_equity"],
                 "current_pnl_pct": stats["equity_change_pct"],
                 "max_drawdown_pct": session_state.max_drawdown_pct,
@@ -228,7 +354,11 @@ async def get_forward_status(
     
     elapsed_seconds = session.elapsed_seconds or 0
     if not elapsed_seconds and session.started_at:
-        elapsed_seconds = int((now - session.started_at).total_seconds())
+        # Ensure both datetimes are timezone-aware for comparison
+        started_at = session.started_at
+        if started_at.tzinfo is None:
+            started_at = started_at.replace(tzinfo=timezone.utc)
+        elapsed_seconds = int((now - started_at).total_seconds())
     
     open_position = _open_position_from_dict(session.open_position)
     
@@ -238,6 +368,8 @@ async def get_forward_status(
             "status": session.status,
             "started_at": session.started_at,
             "elapsed_seconds": elapsed_seconds,
+            "asset": session.asset,
+            "timeframe": session.timeframe,
             "current_equity": current_equity,
             "current_pnl_pct": pnl_pct,
             "max_drawdown_pct": max_drawdown,
@@ -255,7 +387,7 @@ _DATE_PRESET_MAP = {
 
 
 def _resolve_date_preset(preset: str) -> Tuple[datetime, datetime]:
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     if preset == "7d":
         return now - timedelta(days=7), now
     if preset == "30d":
@@ -398,7 +530,7 @@ async def start_backtest(
         safety_mode=request.safety_mode,
         allow_leverage=request.allow_leverage,
         current_equity=Decimal(str(request.starting_capital)),
-        created_at=datetime.utcnow()
+        created_at=datetime.now(timezone.utc)
     )
     db.add(test_session)
     await db.commit()
@@ -502,7 +634,7 @@ async def get_backtest_status(
         pnl_pct = stats["equity_change_pct"]
         open_pos = session_state.position_manager.get_position()
         open_pos_data = _serialize_open_position(open_pos)
-        elapsed_seconds = int((datetime.utcnow() - session_state.started_at).total_seconds()) if session_state.started_at else 0
+        elapsed_seconds = int((datetime.now(timezone.utc) - session_state.started_at).total_seconds()) if session_state.started_at else 0
         progress_pct = (
             (session_state.current_index / len(session_state.candles)) * 100
             if session_state.candles else 0
@@ -608,7 +740,7 @@ async def pause_backtest(
         return {
             "session_id": id,
             "status": "paused",
-            "paused_at": datetime.utcnow()
+            "paused_at": datetime.now(timezone.utc)
         }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -719,6 +851,8 @@ async def start_forward_test(
         auto_stop_config=auto_stop_config,
         email_notifications=request.email_notifications,
         allow_leverage=request.allow_leverage,
+        decision_mode=request.decision_mode,
+        decision_interval_candles=request.decision_interval_candles,
     )
     
     return {

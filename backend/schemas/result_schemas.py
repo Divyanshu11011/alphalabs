@@ -98,7 +98,7 @@ class AIThoughtSchema(BaseModel):
     timestamp: datetime
     decision: str
     reasoning: str
-    indicator_values: Dict[str, float]
+    indicator_values: Dict[str, Optional[float]]
 
 class ReasoningResponse(BaseModel):
     thoughts: List[AIThoughtSchema]

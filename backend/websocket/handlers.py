@@ -249,6 +249,13 @@ async def handle_forward_websocket(
             f"Forward test WebSocket connected: session={session_id}, conn={connection_id}, user={clerk_user_id}"
         )
         
+        # Send historical candles to new connection
+        try:
+            engine = get_forward_engine()
+            await engine.send_historical_candles_to_connection(session_id, connection_id)
+        except Exception as exc:
+            logger.warning(f"Failed to send historical candles to new connection: {exc}")
+        
         while True:
             try:
                 data = await websocket.receive_text()

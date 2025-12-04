@@ -3,13 +3,22 @@
  */
 
 import { create } from "zustand";
-import type { TestResult, ResultFilters, ResultsStats } from "@/types";
-import { DUMMY_RESULTS, DUMMY_RESULTS_STATS } from "@/lib/dummy-data";
+import type { TestResult, ResultFilters, ResultsStats, ResultListItem } from "@/types";
+
+const DEFAULT_STATS: ResultsStats = {
+  totalTests: 0,
+  profitable: 0,
+  profitablePercent: 0,
+  bestResult: 0,
+  avgPnL: 0,
+};
 
 interface ResultsState {
   // Data
   results: TestResult[];
   stats: ResultsStats;
+  setResults: (results: TestResult[] | ResultListItem[]) => void;
+  setStats: (stats: ResultsStats) => void;
   selectedResultId: string | null;
   
   // Filters
@@ -45,10 +54,30 @@ const defaultFilters: ResultFilters = {
   agentId: undefined,
 };
 
+/**
+ * Convert ResultListItem from API to TestResult for store compatibility
+ */
+const mapListItemToTestResult = (item: ResultListItem): TestResult => ({
+  id: item.id,
+  type: item.type,
+  agentId: item.agentId,
+  agentName: item.agentName,
+  asset: item.asset,
+  mode: item.mode as "monk" | "omni",
+  date: new Date(item.createdAt),
+  duration: item.durationDisplay || "–",
+  trades: item.totalTrades,
+  pnl: item.totalPnlPct,
+  winRate: item.winRate,
+  maxDrawdown: item.maxDrawdownPct,
+  sharpeRatio: item.sharpeRatio,
+  profitFactor: item.profitFactor,
+});
+
 export const useResultsStore = create<ResultsState>((set, get) => ({
-  // Data - using dummy data
-  results: DUMMY_RESULTS,
-  stats: DUMMY_RESULTS_STATS,
+  // Data
+  results: [],
+  stats: DEFAULT_STATS,
   selectedResultId: null,
 
   // Refresh trigger
@@ -69,6 +98,19 @@ export const useResultsStore = create<ResultsState>((set, get) => ({
 
   // Selection
   selectResult: (id) => set({ selectedResultId: id }),
+  setResults: (results: TestResult[] | ResultListItem[]) => {
+    // Accept both TestResult[] and ResultListItem[] for flexibility
+    const mappedResults: TestResult[] = results.map((r) => {
+      // Check if it's already a TestResult (has date as Date)
+      if ('date' in r && r.date instanceof Date) {
+        return r as TestResult;
+      }
+      // Otherwise it's a ResultListItem, map it
+      return mapListItemToTestResult(r as ResultListItem);
+    });
+    set({ results: mappedResults });
+  },
+  setStats: (stats) => set({ stats }),
 
   // Computed - returns filtered results
   filteredResults: () => {

@@ -178,39 +178,93 @@ function CandlestickChartComponent({
     };
   }, [showVolume, onCrosshairMove, isDark]);
 
+  // Track previous data length and last candle for incremental updates
+  const prevDataLengthRef = useRef(0);
+  const prevLastCandleRef = useRef<CandleData | null>(null);
+
   // Update data
   useEffect(() => {
-    if (!candleSeriesRef.current || data.length === 0) return;
-
-    const colors = getChartColors(isDark);
-
-    const sortedData = [...data].sort((a, b) => a.time - b.time);
-
-    const candleData: CandlestickData<Time>[] = sortedData.map((d) => ({
-      time: (d.time / 1000) as Time, // Convert ms to seconds
-      open: d.open,
-      high: d.high,
-      low: d.low,
-      close: d.close,
-    }));
-
-    candleSeriesRef.current.setData(candleData);
-
-    // Volume data with theme-aware colors
-    if (volumeSeriesRef.current && showVolume) {
-      const volumeData = sortedData.map((d) => ({
-        time: (d.time / 1000) as Time,
-        value: d.volume,
-        color:
-          d.close >= d.open
-            ? `${colors.upColor}66` // 40% opacity
-            : `${colors.downColor}66`,
-      }));
-      volumeSeriesRef.current.setData(volumeData);
+    if (!candleSeriesRef.current) return;
+    
+    if (data.length === 0) {
+      // Clear chart if no data
+      candleSeriesRef.current.setData([]);
+      if (volumeSeriesRef.current) {
+        volumeSeriesRef.current.setData([]);
+      }
+      return;
     }
 
-    // Fit content
-    chartRef.current?.timeScale().fitContent();
+    const colors = getChartColors(isDark);
+    const sortedData = [...data].sort((a, b) => a.time - b.time);
+    const currentLength = sortedData.length;
+    const prevLength = prevDataLengthRef.current;
+
+    // For real-time updates: if only the last candle changed, use update() for better performance
+    // Otherwise, use setData() for full replacement
+    if (prevLength > 0 && currentLength === prevLength) {
+      // Only last candle updated - use incremental update
+      const lastCandle = sortedData[sortedData.length - 1];
+      const lastCandleData: CandlestickData<Time> = {
+        time: (lastCandle.time / 1000) as Time,
+        open: lastCandle.open,
+        high: lastCandle.high,
+        low: lastCandle.low,
+        close: lastCandle.close,
+      };
+      
+      // Always update the last candle for real-time price updates
+      candleSeriesRef.current.update(lastCandleData);
+
+      // Update volume if enabled
+      if (volumeSeriesRef.current && showVolume) {
+        const lastVolumeData = {
+          time: (lastCandle.time / 1000) as Time,
+          value: lastCandle.volume,
+          color:
+            lastCandle.close >= lastCandle.open
+              ? `${colors.upColor}66`
+              : `${colors.downColor}66`,
+        };
+        volumeSeriesRef.current.update(lastVolumeData);
+      }
+      
+      // Update the ref to track current length
+      prevDataLengthRef.current = currentLength;
+    } else {
+      // New candle added or full data replacement - use setData()
+      const candleData: CandlestickData<Time>[] = sortedData.map((d) => ({
+        time: (d.time / 1000) as Time,
+        open: d.open,
+        high: d.high,
+        low: d.low,
+        close: d.close,
+      }));
+
+      candleSeriesRef.current.setData(candleData);
+
+      // Volume data with theme-aware colors
+      if (volumeSeriesRef.current && showVolume) {
+        const volumeData = sortedData.map((d) => ({
+          time: (d.time / 1000) as Time,
+          value: d.volume,
+          color:
+            d.close >= d.open
+              ? `${colors.upColor}66`
+              : `${colors.downColor}66`,
+        }));
+        volumeSeriesRef.current.setData(volumeData);
+      }
+
+      // Fit content only on full updates
+      chartRef.current?.timeScale().fitContent();
+      
+      // Update refs for next comparison
+      prevDataLengthRef.current = currentLength;
+      if (sortedData.length > 0) {
+        prevLastCandleRef.current = sortedData[sortedData.length - 1];
+      }
+    }
   }, [data, showVolume, isDark]);
 
   useEffect(() => {

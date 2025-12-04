@@ -123,6 +123,8 @@ const DEFAULT_FILTERS: ResultFilters = {
 export function ResultsList() {
   const { fetchResults, fetchStats } = useResultsApi();
   const refreshKey = useResultsStore((state) => state.refreshKey);
+  const setResultsStore = useResultsStore((state) => state.setResults);
+  const setStatsStore = useResultsStore((state) => state.setStats);
   const [stats, setStats] = useState<ResultsStats>(DEFAULT_STATS);
   const [results, setResults] = useState<ResultListItem[]>([]);
   const [filters, setFilters] = useState<ResultFilters>(DEFAULT_FILTERS);
@@ -158,13 +160,15 @@ export function ResultsList() {
     try {
       const response = await fetchStats();
       const payload = response.stats;
-      setStats({
+      const nextStats = {
         totalTests: payload.total_tests ?? 0,
         profitable: payload.profitable ?? 0,
         profitablePercent: Math.round(payload.profitable_pct ?? 0),
         bestResult: payload.best_result ?? 0,
         avgPnL: payload.avg_pnl ?? 0,
-      });
+      };
+      setStats(nextStats);
+      setStatsStore(nextStats);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load stats");
     }
@@ -177,6 +181,7 @@ export function ResultsList() {
       const response = await fetchResults(paramsForRequest());
       setResults(response.results);
       setPagination(response.pagination);
+      setResultsStore(response.results);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load results");
     } finally {

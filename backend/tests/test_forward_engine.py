@@ -24,6 +24,7 @@ from models.agent import Agent
 from models.arena import TestSession
 from websocket.manager import WebSocketManager
 from exceptions import ValidationError
+from services.trading.position_manager import PositionManager
 
 
 @pytest.fixture
@@ -576,6 +577,58 @@ async def test_result_generation(db_session, websocket_manager, mock_agent):
                     
                     # Verify WebSocket event was broadcast
                     websocket_manager.broadcast_to_session.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_pause_forward_test_updates_session_state(websocket_manager, mock_agent):
+    async def mock_session_factory():
+        yield None
+
+    engine = ForwardEngine(mock_session_factory, websocket_manager)
+    position_manager = PositionManager(starting_capital=10000.0, safety_mode=True)
+    session_state = SessionState(
+        session_id="session-123",
+        agent=mock_agent,
+        asset="BTC/USDT",
+        timeframe="1h",
+        position_manager=position_manager,
+        ai_trader=Mock()
+    )
+    engine.active_sessions["session-123"] = session_state
+
+    with patch.object(engine.broadcaster, 'broadcast_session_paused', new=AsyncMock()) as broadcast_pause:
+        await engine.pause_forward_test("session-123")
+
+    assert session_state.is_paused is True
+    assert not session_state.pause_event.is_set()
+    broadcast_pause.assert_awaited_once_with("session-123")
+
+
+@pytest.mark.asyncio
+async def test_resume_forward_test_sets_event_and_broadcasts(websocket_manager, mock_agent):
+    async def mock_session_factory():
+        yield None
+
+    engine = ForwardEngine(mock_session_factory, websocket_manager)
+    position_manager = PositionManager(starting_capital=10000.0, safety_mode=True)
+    session_state = SessionState(
+        session_id="session-123",
+        agent=mock_agent,
+        asset="BTC/USDT",
+        timeframe="1h",
+        position_manager=position_manager,
+        ai_trader=Mock(),
+        is_paused=True
+    )
+    session_state.pause_event.clear()
+    engine.active_sessions["session-123"] = session_state
+
+    with patch.object(engine.broadcaster, 'broadcast_session_resumed', new=AsyncMock()) as broadcast_resume:
+        await engine.resume_forward_test("session-123")
+
+    assert session_state.is_paused is False
+    assert session_state.pause_event.is_set()
+    broadcast_resume.assert_awaited_once_with("session-123")
 
 
 if __name__ == "__main__":

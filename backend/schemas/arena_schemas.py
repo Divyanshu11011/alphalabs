@@ -119,6 +119,22 @@ class ForwardStartRequest(BaseModel):
     auto_stop_on_loss: bool = True
     auto_stop_loss_pct: float = Field(10.0, ge=0.0, le=100.0)
     allow_leverage: bool = False
+    decision_mode: str = "every_candle"
+    decision_interval_candles: int = Field(1, ge=1, description="Interval used with every_n_candles")
+    
+    @validator('decision_mode')
+    def validate_decision_mode(cls, v):
+        allowed = ['every_candle', 'every_n_candles']
+        if v not in allowed:
+            raise ValueError(f"Invalid decision_mode. Must be one of {allowed}")
+        return v
+    
+    @validator('decision_interval_candles')
+    def validate_decision_interval(cls, v, values):
+        mode = values.get("decision_mode", "every_candle")
+        if mode == "every_n_candles" and v < 1:
+            raise ValueError("decision_interval_candles must be >= 1 when mode is every_n_candles")
+        return v
 
 class ForwardSessionResponse(BaseModel):
     id: UUID
@@ -153,6 +169,8 @@ class ForwardStatusResponse(BaseModel):
     status: str
     started_at: Optional[datetime]
     elapsed_seconds: int
+    asset: str
+    timeframe: str
     current_equity: float
     current_pnl_pct: float
     max_drawdown_pct: float

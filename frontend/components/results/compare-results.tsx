@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import {
@@ -28,12 +28,12 @@ import {
 } from "@/components/ui/animated-select";
 import { cn } from "@/lib/utils";
 import { useResultsStore } from "@/lib/stores";
-import { DUMMY_RESULTS } from "@/lib/dummy-data";
-import type { TestResult } from "@/types/result";
+import { useResultsApi } from "@/hooks/use-results-api";
+import type { ResultListItem } from "@/types/result";
 
 interface ComparisonMetric {
   label: string;
-  key: keyof TestResult | string;
+  key: keyof ResultListItem;
   format: (value: number) => string;
   higherIsBetter: boolean;
   icon: React.ReactNode;
@@ -42,7 +42,7 @@ interface ComparisonMetric {
 const metrics: ComparisonMetric[] = [
   {
     label: "PnL",
-    key: "pnl",
+    key: "totalPnlPct",
     format: (v) => `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`,
     higherIsBetter: true,
     icon: <TrendingUp className="h-4 w-4" />,
@@ -50,7 +50,7 @@ const metrics: ComparisonMetric[] = [
   {
     label: "Win Rate",
     key: "winRate",
-    format: (v) => `${v}%`,
+    format: (v) => `${v.toFixed(1)}%`,
     higherIsBetter: true,
     icon: <Target className="h-4 w-4" />,
   },
@@ -58,14 +58,14 @@ const metrics: ComparisonMetric[] = [
     label: "Total Trades",
     key: "totalTrades",
     format: (v) => `${v}`,
-    higherIsBetter: false, // Neutral
+    higherIsBetter: false,
     icon: <Activity className="h-4 w-4" />,
   },
   {
     label: "Max Drawdown",
-    key: "maxDrawdown",
-    format: (v) => `${v}%`,
-    higherIsBetter: false, // Lower is better (less negative)
+    key: "maxDrawdownPct",
+    format: (v) => `${v.toFixed(2)}%`,
+    higherIsBetter: false,
     icon: <TrendingDown className="h-4 w-4" />,
   },
   {
@@ -86,8 +86,34 @@ const metrics: ComparisonMetric[] = [
 
 export function CompareResults() {
   const searchParams = useSearchParams();
-  const { results: storeResults } = useResultsStore();
-  const results = storeResults.length > 0 ? storeResults : DUMMY_RESULTS;
+  const refreshKey = useResultsStore((state) => state.refreshKey);
+  const { fetchResults } = useResultsApi();
+  const [results, setResults] = useState<ResultListItem[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const loadResults = useCallback(async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const response = await fetchResults({ page: 1, limit: 50 });
+      setResults(response.results);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load results");
+    } finally {
+      setIsLoading(false);
+    }
+  }, [fetchResults]);
+
+  useEffect(() => {
+    void loadResults();
+  }, [loadResults]);
+
+  useEffect(() => {
+    if (refreshKey > 0) {
+      void loadResults();
+    }
+  }, [refreshKey, loadResults]);
 
   // Get initial selections from URL params
   const initialLeft = searchParams.get("left") || "";
@@ -101,22 +127,22 @@ export function CompareResults() {
 
   const getWinner = (metric: ComparisonMetric): "left" | "right" | "tie" | null => {
     if (!leftResult || !rightResult) return null;
-    
-    const leftValue = leftResult[metric.key as keyof TestResult] as number;
-    const rightValue = rightResult[metric.key as keyof TestResult] as number;
+
+    const leftValue = Number(leftResult[metric.key] ?? 0);
+    const rightValue = Number(rightResult[metric.key] ?? 0);
 
     if (leftValue === rightValue) return "tie";
-    
-    if (metric.key === "maxDrawdown") {
-      // For drawdown, closer to 0 is better (less negative)
-      return leftValue > rightValue ? "left" : "right";
+
+    if (metric.key === "maxDrawdownPct") {
+      // Lower drawdown (closer to 0) is better.
+      return leftValue <= rightValue ? "left" : "right";
     }
-    
+
     if (metric.higherIsBetter) {
       return leftValue > rightValue ? "left" : "right";
-    } else {
-      return leftValue < rightValue ? "left" : "right";
     }
+
+    return leftValue < rightValue ? "left" : "right";
   };
 
   const overallScore = useMemo(() => {
@@ -157,6 +183,21 @@ export function CompareResults() {
           </div>
         </div>
       </div>
+      {error && (
+        <div className="rounded-md border border-destructive/50 bg-destructive/10 p-4 text-sm text-destructive">
+          {error}
+        </div>
+      )}
+      {isLoading && !error && (
+        <div className="rounded-md border border-border/50 bg-muted/20 p-4 text-sm text-muted-foreground">
+          Loading results...
+        </div>
+      )}
+      {!isLoading && results.length === 0 && (
+        <div className="rounded-md border border-border/50 bg-muted/20 p-4 text-sm text-muted-foreground">
+          No results yet. Run a test to compare performance.
+        </div>
+      )}
 
       {/* Selection Row */}
       <div className="grid gap-4 lg:grid-cols-[1fr_auto_1fr]">
@@ -182,22 +223,22 @@ export function CompareResults() {
                   >
                     <span className="font-mono">{result.agentName}</span>
                     <span className="ml-2 text-xs text-muted-foreground">
-                      {result.pnl >= 0 ? "+" : ""}{result.pnl.toFixed(1)}%
+                      {result.totalPnlPct >= 0 ? "+" : ""}{result.totalPnlPct.toFixed(1)}%
                     </span>
                   </AnimatedSelectItem>
                 ))}
               </AnimatedSelectContent>
             </AnimatedSelect>
             {leftResult && (
-              <div className="mt-3 flex items-center justify-between">
-                <Badge variant="outline">{leftResult.type}</Badge>
-                <span className={cn(
-                  "font-mono text-lg font-bold",
-                  leftResult.pnl >= 0 ? "text-[hsl(var(--accent-green))]" : "text-[hsl(var(--accent-red))]"
-                )}>
-                  {leftResult.pnl >= 0 ? "+" : ""}{leftResult.pnl.toFixed(2)}%
-                </span>
-              </div>
+                <div className="mt-3 flex items-center justify-between">
+                  <Badge variant="outline">{leftResult.type}</Badge>
+                  <span className={cn(
+                    "font-mono text-lg font-bold",
+                    leftResult.totalPnlPct >= 0 ? "text-[hsl(var(--accent-green))]" : "text-[hsl(var(--accent-red))]"
+                  )}>
+                    {leftResult.totalPnlPct >= 0 ? "+" : ""}{leftResult.totalPnlPct.toFixed(2)}%
+                  </span>
+                </div>
             )}
           </CardContent>
         </Card>
@@ -231,22 +272,22 @@ export function CompareResults() {
                   >
                     <span className="font-mono">{result.agentName}</span>
                     <span className="ml-2 text-xs text-muted-foreground">
-                      {result.pnl >= 0 ? "+" : ""}{result.pnl.toFixed(1)}%
+                      {result.totalPnlPct >= 0 ? "+" : ""}{result.totalPnlPct.toFixed(1)}%
                     </span>
                   </AnimatedSelectItem>
                 ))}
               </AnimatedSelectContent>
             </AnimatedSelect>
             {rightResult && (
-              <div className="mt-3 flex items-center justify-between">
-                <Badge variant="outline">{rightResult.type}</Badge>
-                <span className={cn(
-                  "font-mono text-lg font-bold",
-                  rightResult.pnl >= 0 ? "text-[hsl(var(--accent-green))]" : "text-[hsl(var(--accent-red))]"
-                )}>
-                  {rightResult.pnl >= 0 ? "+" : ""}{rightResult.pnl.toFixed(2)}%
-                </span>
-              </div>
+                <div className="mt-3 flex items-center justify-between">
+                  <Badge variant="outline">{rightResult.type}</Badge>
+                  <span className={cn(
+                    "font-mono text-lg font-bold",
+                    rightResult.totalPnlPct >= 0 ? "text-[hsl(var(--accent-green))]" : "text-[hsl(var(--accent-red))]"
+                  )}>
+                    {rightResult.totalPnlPct >= 0 ? "+" : ""}{rightResult.totalPnlPct.toFixed(2)}%
+                  </span>
+                </div>
             )}
           </CardContent>
         </Card>
@@ -280,8 +321,8 @@ export function CompareResults() {
           <div className="divide-y divide-border/50">
             {metrics.map((metric) => {
               const winner = getWinner(metric);
-              const leftValue = leftResult[metric.key as keyof TestResult] as number;
-              const rightValue = rightResult[metric.key as keyof TestResult] as number;
+              const leftValue = Number(leftResult[metric.key] ?? 0);
+              const rightValue = Number(rightResult[metric.key] ?? 0);
 
               return (
                 <div key={metric.key} className="grid grid-cols-[1fr_auto_1fr]">

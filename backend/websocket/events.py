@@ -82,6 +82,8 @@ class EventType:
     # Forward test specific
     COUNTDOWN_UPDATE = "countdown_update"
     AUTO_STOP_TRIGGERED = "auto_stop_triggered"
+    INDICATOR_READINESS = "indicator_readiness"
+    PRICE_UPDATE = "price_update"  # Real-time price updates
     
     # Connection health
     HEARTBEAT = "heartbeat"

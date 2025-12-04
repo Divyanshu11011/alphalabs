@@ -7,7 +7,7 @@ and waiting for candle closes in real-time forward testing.
 
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from services.market_data_service import MarketDataService, Candle
@@ -103,7 +103,7 @@ class TimingManager:
             Candle: The newly closed candle, or None if stopped
         """
         # Get current time
-        current_time = datetime.utcnow()
+        current_time = datetime.now(timezone.utc)
         
         # Calculate next candle close time
         next_close_time = self.calculate_next_candle_close_time(
@@ -124,7 +124,7 @@ class TimingManager:
         
         # Wait loop with countdown updates
         while not session_state.is_stopped:
-            current_time = datetime.utcnow()
+            current_time = datetime.now(timezone.utc)
             
             # Calculate seconds remaining
             seconds_remaining = int((next_close_time - current_time).total_seconds())
@@ -154,7 +154,7 @@ class TimingManager:
                         await asyncio.sleep(10)
                         # Recalculate next close time
                         next_close_time = self.calculate_next_candle_close_time(
-                            datetime.utcnow(),
+                            datetime.now(timezone.utc),
                             session_state.timeframe
                         )
                         continue
@@ -169,7 +169,8 @@ class TimingManager:
             await self._broadcast_countdown_update(
                 session_id,
                 seconds_remaining,
-                next_close_time
+                next_close_time,
+                session_state
             )
             
             # Wait 30 seconds before next update (or less if close to candle close)
@@ -179,22 +180,77 @@ class TimingManager:
         # Stopped during wait
         return None
     
+    def calculate_next_ai_intervention(
+        self,
+        session_state: SessionState,
+        current_candle_index: int
+    ) -> tuple[int, int]:
+        """
+        Calculate when the next AI intervention will occur.
+        
+        Returns:
+            Tuple of (candles_until_intervention, minutes_until_intervention)
+        """
+        mode = getattr(session_state, "decision_mode", "every_candle")
+        interval = getattr(session_state, "decision_interval_candles", 1) or 1
+        decision_start = getattr(session_state, "decision_start_index", 0)
+        
+        if mode == "every_candle":
+            # AI intervenes on every candle (after warm-up)
+            if current_candle_index < decision_start:
+                # Still in warm-up, calculate candles until warm-up completes
+                candles_until = decision_start - current_candle_index
+            else:
+                # Next candle will trigger AI
+                candles_until = 1
+        else:  # every_n_candles
+            # Calculate how many candles until next decision candle
+            if current_candle_index < decision_start:
+                # Still in warm-up
+                candles_until = decision_start - current_candle_index
+            else:
+                # Calculate next decision candle
+                elapsed = current_candle_index - decision_start
+                next_decision_candle = ((elapsed // interval) + 1) * interval + decision_start
+                candles_until = next_decision_candle - current_candle_index
+        
+        # Convert candles to minutes based on timeframe
+        minutes_per_candle = self.TIMEFRAME_MINUTES.get(session_state.timeframe, 60)
+        minutes_until = candles_until * minutes_per_candle
+        
+        return candles_until, minutes_until
+    
     async def _broadcast_countdown_update(
         self,
         session_id: str,
         seconds_remaining: int,
-        next_candle_time: datetime
+        next_candle_time: datetime,
+        session_state: SessionState
     ) -> None:
         """
         Broadcast countdown update event to WebSocket clients.
+        
+        Includes both next candle time and next AI intervention time.
         
         Args:
             session_id: Session identifier
             seconds_remaining: Seconds until next candle close
             next_candle_time: Expected time of next candle close
+            session_state: Session state to calculate AI intervention timing
         """
+        # Calculate next AI intervention
+        current_candle_index = len(session_state.candles_processed) - 1 if session_state.candles_processed else 0
+        candles_until_ai, minutes_until_ai = self.calculate_next_ai_intervention(
+            session_state,
+            current_candle_index
+        )
+        
         event = create_countdown_update_event(
             seconds_remaining=seconds_remaining,
             next_candle_time=next_candle_time.isoformat()
         )
+        # Add AI intervention info to event data
+        event.data["next_ai_intervention_candles"] = candles_until_ai
+        event.data["next_ai_intervention_minutes"] = minutes_until_ai
+        
         await self.websocket_manager.broadcast_to_session(session_id, event)
