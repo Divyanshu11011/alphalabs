@@ -72,6 +72,7 @@ export interface Position {
 
 export interface Trade {
   id: string;
+  tradeNumber?: number; // Trade number from backend for deduplication
   type: "long" | "short";
   entryPrice: number;
   exitPrice: number;

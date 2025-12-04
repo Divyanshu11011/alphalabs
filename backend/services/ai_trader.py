@@ -60,6 +60,10 @@ class AIDecision:
     """
     action: str
     reasoning: str
+    # Optional entry price for limit-like behavior. If provided, the engine
+    # will treat this as a pending order to be filled when price reaches this
+    # level; otherwise it is treated as a market-at-close decision.
+    entry_price: Optional[float] = None
     stop_loss_price: Optional[float] = None
     take_profit_price: Optional[float] = None
     size_percentage: float = 0.0
@@ -161,13 +165,18 @@ class AITrader:
                 async def circuit_protected_request():
                     return await self.circuit_breaker.call(make_request)
                 
-                # Apply retry with exponential backoff
+                # Apply retry with exponential backoff.
+                # We deliberately keep retries very low and treat timeouts as
+                # non-retriable in order to avoid freezing long backtests
+                # when OpenRouter is slow or unavailable.
                 return await retry_with_backoff(
                     circuit_protected_request,
                     max_retries=settings.MAX_RETRIES,
                     base_delay=settings.RETRY_BASE_DELAY,
                     max_delay=settings.RETRY_MAX_DELAY,
-                    exceptions=(OpenRouterAPIError, AlphaLabTimeoutError),
+                    # Only retry on explicit API failures; timeouts will fall
+                    # through and be handled as a single HOLD decision.
+                    exceptions=(OpenRouterAPIError,),
                     operation_name="ai_decision"
                 )
             
@@ -283,13 +292,18 @@ Rules:
     
     async def _make_api_request(self, user_message: str) -> str:
         """
-        Make streaming API request to OpenRouter with timeout and retry.
+        Make API request to OpenRouter with timeout and retry.
+        
+        We intentionally use the non-streaming API with OpenRouter structured
+        outputs so the model is constrained to emit JSON that matches our
+        trading decision schema. This keeps parsing simple and avoids most
+        hallucinated or malformed responses.
         
         Args:
             user_message: User message with market context
             
         Returns:
-            Complete response text from AI
+            Complete response text from AI (JSON string)
             
         Raises:
             OpenRouterAPIError: If API call fails
@@ -307,28 +321,84 @@ Your Strategy:
 You must analyze the market data and make trading decisions based on your strategy.
 Always respond with valid JSON in the exact format specified."""
                 
-                # Make streaming request
+                # Make non-streaming request with structured outputs so we get
+                # a single JSON object that matches our schema.
                 response = await self.client.chat.completions.create(
                     model=self.model,
                     messages=[
                         {"role": "system", "content": system_message},
                         {"role": "user", "content": user_message}
                     ],
-                    stream=True,
-                    response_format={"type": "json_object"},
-                    temperature=0.7,
-                    max_tokens=1000
+                    response_format={
+                        "type": "json_schema",
+                        "json_schema": {
+                            "name": "trading_decision",
+                            "strict": True,
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "action": {
+                                        "type": "string",
+                                        "description": "Trading action to take",
+                                        "enum": ["LONG", "SHORT", "CLOSE", "HOLD"],
+                                    },
+                                    "reasoning": {
+                                        "type": "string",
+                                        "description": "Explanation for the decision based on indicators and market context",
+                                    },
+                                    "entry_price": {
+                                        "type": "number",
+                                        "description": "Desired entry price. If omitted, enter at current close.",
+                                    },
+                                    "stop_loss_price": {
+                                        "type": "number",
+                                        "description": "Absolute stop loss price level. Optional; can be omitted.",
+                                    },
+                                    "take_profit_price": {
+                                        "type": "number",
+                                        "description": "Absolute take profit price level. Optional; can be omitted.",
+                                    },
+                                    "size_percentage": {
+                                        "type": "number",
+                                        "description": "Fraction of capital to use between 0.0 and 1.0",
+                                        "minimum": 0.0,
+                                        "maximum": 1.0,
+                                    },
+                                    "leverage": {
+                                        "type": "integer",
+                                        "description": "Leverage multiplier between 1 and 5",
+                                        "minimum": 1,
+                                        "maximum": 5,
+                                    },
+                                },
+                                "required": ["action", "reasoning", "size_percentage", "leverage"],
+                                "additionalProperties": False,
+                            },
+                        },
+                    },
+                    # Deterministic decisions for backtest/forward so runs are reproducible
+                    temperature=0,
+                    # Keep max_tokens small to stay well within OpenRouter credit limits
+                    # and avoid 402 errors like "requested 65535 tokens".
+                    max_tokens=512,
                 )
-                
-                # Collect streaming response
-                full_response = ""
-                async for chunk in response:
-                    if chunk.choices and chunk.choices[0].delta.content:
-                        full_response += chunk.choices[0].delta.content
-                
+
+                # OpenAI / OpenRouter client returns the content on the first choice
+                content = response.choices[0].message.content
+                if content is None:
+                    raise OpenRouterAPIError("Empty response from API")
+
+                # In most cases this will already be a JSON string; if not, we
+                # serialize whatever object we got so that _parse_response can
+                # still call json.loads on it.
+                if isinstance(content, str):
+                    full_response = content.strip()
+                else:
+                    full_response = json.dumps(content)
+
                 if not full_response:
                     raise OpenRouterAPIError("Empty response from API")
-                
+
                 return full_response
                 
             except Exception as e:
@@ -359,8 +429,26 @@ Always respond with valid JSON in the exact format specified."""
             OpenRouterAPIError: If response is invalid
         """
         try:
+            # Normalize and extract JSON payload
+            if not response_text:
+                raise OpenRouterAPIError("Empty response from API")
+
+            stripped = response_text.strip()
+            if not stripped:
+                raise OpenRouterAPIError("Empty response from API")
+
+            # Some models may wrap JSON in extra text or markdown fences.
+            # Try to isolate the first {...} block before parsing.
+            start = stripped.find("{")
+            end = stripped.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                json_str = stripped[start : end + 1]
+            else:
+                # Fall back to full string; this will raise a clear JSON error.
+                json_str = stripped
+
             # Parse JSON
-            data = json.loads(response_text)
+            data = json.loads(json_str)
             
             # Validate required fields
             if "action" not in data:
@@ -374,10 +462,15 @@ Always respond with valid JSON in the exact format specified."""
                 raise OpenRouterAPIError(f"Invalid action: {action}")
             
             # Extract optional fields with defaults
+            entry_price = data.get("entry_price")
             stop_loss_price = data.get("stop_loss_price")
             take_profit_price = data.get("take_profit_price")
             size_percentage = data.get("size_percentage", 0.0)
             leverage = data.get("leverage", 1)
+
+            # Be tolerant of null coming back from the model by treating it as 0
+            if size_percentage is None:
+                size_percentage = 0.0
             
             # Validate size_percentage
             if not isinstance(size_percentage, (int, float)):
@@ -391,7 +484,9 @@ Always respond with valid JSON in the exact format specified."""
             if leverage < 1 or leverage > 5:
                 raise OpenRouterAPIError(f"leverage must be between 1 and 5, got {leverage}")
             
-            # Validate stop_loss_price and take_profit_price if provided
+            # Validate entry_price, stop_loss_price and take_profit_price if provided
+            if entry_price is not None and not isinstance(entry_price, (int, float)):
+                raise OpenRouterAPIError(f"Invalid entry_price type: {type(entry_price)}")
             if stop_loss_price is not None and not isinstance(stop_loss_price, (int, float)):
                 raise OpenRouterAPIError(f"Invalid stop_loss_price type: {type(stop_loss_price)}")
             if take_profit_price is not None and not isinstance(take_profit_price, (int, float)):
@@ -401,10 +496,11 @@ Always respond with valid JSON in the exact format specified."""
             return AIDecision(
                 action=action,
                 reasoning=data["reasoning"],
+                entry_price=float(entry_price) if entry_price is not None else None,
                 stop_loss_price=float(stop_loss_price) if stop_loss_price is not None else None,
                 take_profit_price=float(take_profit_price) if take_profit_price is not None else None,
                 size_percentage=float(size_percentage),
-                leverage=leverage
+                leverage=leverage,
             )
             
         except json.JSONDecodeError as e:

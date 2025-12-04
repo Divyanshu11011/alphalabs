@@ -176,12 +176,35 @@ export const useArenaStore = create<ArenaState>((set, get) => ({
         currentCandle: 0,
         totalCandles: 0,
       };
+      
+      // Deduplicate by trade_number if available, otherwise by id
+      const existingIndex = trade.tradeNumber !== undefined
+        ? session.trades.findIndex(t => t.tradeNumber === trade.tradeNumber)
+        : session.trades.findIndex(t => t.id === trade.id);
+      
+      let updatedTrades = [...session.trades];
+      if (existingIndex >= 0) {
+        // Update existing trade
+        updatedTrades[existingIndex] = trade;
+      } else {
+        // Add new trade at the beginning
+        updatedTrades = [trade, ...updatedTrades];
+      }
+      
+      // Sort by trade_number descending (newest first), then limit to 100
+      updatedTrades.sort((a, b) => {
+        if (a.tradeNumber !== undefined && b.tradeNumber !== undefined) {
+          return b.tradeNumber - a.tradeNumber;
+        }
+        return b.exitTime.getTime() - a.exitTime.getTime();
+      });
+      
       return {
         sessionData: {
           ...state.sessionData,
           [sessionId]: {
             ...session,
-            trades: [trade, ...session.trades].slice(0, 100), // Keep last 100 trades
+            trades: updatedTrades.slice(0, 100), // Keep last 100 trades
           },
         },
       };

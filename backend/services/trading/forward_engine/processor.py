@@ -112,7 +112,7 @@ class CandleProcessor:
             candles=session_state.candles_processed,
             enabled_indicators=session_state.agent.indicators,
             mode=session_state.agent.mode,
-            custom_indicators=session_state.agent.custom_indicators
+            custom_indicators=session_state.agent.custom_indicators,
         )
         
         # Calculate indicators for the latest candle
@@ -146,15 +146,28 @@ class CandleProcessor:
         position_state = session_state.position_manager.get_position()
         equity = session_state.position_manager.get_total_equity()
         
-        # Broadcast AI thinking event
-        await self.broadcaster.broadcast_ai_thinking(session_id)
-        
-        decision = await session_state.ai_trader.get_decision(
-            candle=candle,
-            indicators=indicators,
-            position_state=position_state,
-            equity=equity
-        )
+        # If critical indicators like RSI are not yet available (warmup period),
+        # skip the external LLM call and treat this candle as a HOLD. This keeps
+        # forward tests running without paying for useless API calls that only
+        # complain about missing RSI.
+        missing_rsi = "rsi" in indicators and indicators["rsi"] is None
+        if missing_rsi:
+            decision = AIDecision(
+                action="HOLD",
+                reasoning="Skipping AI decision for this candle because RSI is not yet available (indicator warmup period).",
+                size_percentage=0.0,
+                leverage=1,
+            )
+        else:
+            # Broadcast AI thinking event
+            await self.broadcaster.broadcast_ai_thinking(session_id)
+            
+            decision = await session_state.ai_trader.get_decision(
+                candle=candle,
+                indicators=indicators,
+                position_state=position_state,
+                equity=equity
+            )
         
         # Store AI thought
         ai_thought = {

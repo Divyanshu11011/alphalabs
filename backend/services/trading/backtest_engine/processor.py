@@ -126,19 +126,75 @@ class CandleProcessor:
                     candle.timestamp
                 )
         
+        # Process any pending order (limit-like entry) before asking the AI
+        # for a new decision. This simulates placing an order at a prior
+        # candle and having it fill only when price actually reaches the
+        # requested entry level.
+        if session_state.pending_order and not session_state.position_manager.has_open_position():
+            po = session_state.pending_order
+            entry_price = po.get("entry_price")
+            action = po.get("action")
+            size_pct = po.get("size_percentage", 0.0)
+            stop_loss = po.get("stop_loss_price")
+            take_profit = po.get("take_profit_price")
+            leverage = po.get("leverage", 1)
+
+            if entry_price is not None:
+                # Check if this candle's high/low touched the entry price.
+                if candle.low <= entry_price <= candle.high:
+                    self.logger.info(
+                        f"Filling pending {action} order at {entry_price} on candle {candle_index}"
+                    )
+                    success = await session_state.position_manager.open_position(
+                        action=action.lower(),
+                        entry_price=entry_price,
+                        size_percentage=size_pct,
+                        stop_loss=stop_loss,
+                        take_profit=take_profit,
+                        leverage=leverage,
+                    )
+                    if success:
+                        position = session_state.position_manager.get_position()
+                        await self.position_handler.handle_position_opened(
+                            db,
+                            session_id,
+                            session_state,
+                            position,
+                            candle_index,
+                            candle.timestamp,
+                            po.get("reasoning", "Pending order filled"),
+                        )
+                    # Either way, clear the pending order after this candle.
+                    session_state.pending_order = None
+
         # Get AI decision
         position_state = session_state.position_manager.get_position()
         equity = session_state.position_manager.get_total_equity()
-        
-        # Broadcast AI thinking event
-        await self.broadcaster.broadcast_ai_thinking(session_id)
-        
-        decision = await session_state.ai_trader.get_decision(
-            candle=candle,
-            indicators=indicators,
-            position_state=position_state,
-            equity=equity
-        )
+
+        # Respect warmup period: don't call the AI until all requested
+        # indicators have enough history. We still broadcast candles and
+        # update positions, but decisions are HOLD until then.
+        if candle_index < session_state.decision_start_index:
+            decision = AIDecision(
+                action="HOLD",
+                reasoning=(
+                    f"Skipping AI decision for candle {candle_index} because "
+                    f"indicators are still warming up (decision_start_index="
+                    f"{session_state.decision_start_index})."
+                ),
+                size_percentage=0.0,
+                leverage=1,
+            )
+        else:
+            # Broadcast AI thinking event
+            await self.broadcaster.broadcast_ai_thinking(session_id)
+
+            decision = await session_state.ai_trader.get_decision(
+                candle=candle,
+                indicators=indicators,
+                position_state=position_state,
+                equity=equity,
+            )
         
         # Store AI thought
         ai_thought = {
@@ -155,11 +211,14 @@ class CandleProcessor:
             "reasoning": decision.reasoning,
             "decision": decision.action,
             "order_data": {
+                "entry_price": decision.entry_price,
                 "stop_loss_price": decision.stop_loss_price,
                 "take_profit_price": decision.take_profit_price,
                 "size_percentage": decision.size_percentage,
-                "leverage": decision.leverage
-            } if decision.action in ["LONG", "SHORT"] else None
+                "leverage": decision.leverage,
+            }
+            if decision.action in ["LONG", "SHORT"]
+            else None
         }
         session_state.ai_thoughts.append(ai_thought)
         
@@ -252,27 +311,46 @@ class CandleProcessor:
                 leverage = 1
             leverage = max(1, min(int(leverage), 5))
             
-            # Open position
-            success = await session_state.position_manager.open_position(
-                action=action.lower(),
-                entry_price=candle.close,
-                size_percentage=decision.size_percentage,
-                stop_loss=decision.stop_loss_price,
-                take_profit=decision.take_profit_price,
-                leverage=leverage
-            )
-            
-            if success:
-                position = session_state.position_manager.get_position()
-                await self.position_handler.handle_position_opened(
-                    db,
-                    session_id,
-                    session_state,
-                    position,
-                    candle_index,
-                    candle.timestamp,
-                    decision.reasoning
+            # If the AI provided an explicit entry_price, treat this as a
+            # pending order that will be filled only when price reaches that
+            # level on a future candle. Otherwise, enter immediately at the
+            # current close.
+            if decision.entry_price is not None:
+                session_state.pending_order = {
+                    "action": action,
+                    "entry_price": float(decision.entry_price),
+                    "size_percentage": decision.size_percentage,
+                    "stop_loss_price": decision.stop_loss_price,
+                    "take_profit_price": decision.take_profit_price,
+                    "leverage": leverage,
+                    "reasoning": decision.reasoning,
+                }
+                self.logger.info(
+                    f"Registered pending {action} order at {decision.entry_price} "
+                    f"for session {session_id} on candle {candle_index}"
                 )
+            else:
+                # Open position at current close (market-at-close behavior)
+                success = await session_state.position_manager.open_position(
+                    action=action.lower(),
+                    entry_price=candle.close,
+                    size_percentage=decision.size_percentage,
+                    stop_loss=decision.stop_loss_price,
+                    take_profit=decision.take_profit_price,
+                    leverage=leverage,
+                )
+                
+                if success:
+                    position = session_state.position_manager.get_position()
+                    await self.position_handler.handle_position_opened(
+                        db,
+                        session_id,
+                        session_state,
+                        position,
+                        candle_index,
+                        candle.timestamp,
+                        decision.reasoning,
+                    )
 
     def _record_equity_point(self, session_state: Any, timestamp: datetime, equity: float) -> None:
         point = {"time": timestamp.isoformat(), "value": equity}

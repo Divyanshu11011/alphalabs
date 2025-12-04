@@ -136,6 +136,14 @@ export function BattleScreen({ sessionId }: BattleScreenProps) {
       case "candle":
         // Add new candle to chart - store in Zustand
         if (event.data) {
+          const idx =
+            event.data.candle_index ??
+            event.data.candle_number ??
+            currentCandle;
+          console.log("[Arena] Candle update", {
+            sessionId,
+            candleIndex: idx,
+          });
           const candleData: CandleData = {
             time: new Date(event.data.timestamp).getTime(),
             open: event.data.open,
@@ -189,13 +197,15 @@ export function BattleScreen({ sessionId }: BattleScreenProps) {
       case "position_closed":
         // Position closed - add to trades - store in Zustand
         if (event.data) {
+          const tradeNumber = event.data.trade_number;
           const trade: Trade = {
-            id: event.data.id || `trade-${Date.now()}`,
-            type: event.data.type?.toLowerCase() === "short" ? "short" : "long",
+            id: event.data.id || `trade-${sessionId}-${tradeNumber || Date.now()}`,
+            tradeNumber: tradeNumber,
+            type: event.data.action?.toLowerCase() === "short" ? "short" : "long",
             entryPrice: event.data.entry_price || 0,
             exitPrice: event.data.exit_price || 0,
             size: event.data.size || 0,
-            pnl: event.data.pnl_amount || 0,
+            pnl: event.data.pnl || event.data.pnl_amount || 0,
             pnlPercent: event.data.pnl_pct || 0,
             entryTime: new Date(event.data.entry_time || Date.now()),
             exitTime: new Date(event.data.exit_time || Date.now()),
@@ -468,7 +478,7 @@ export function BattleScreen({ sessionId }: BattleScreenProps) {
   const hiddenThoughts = Math.max(thoughts.length - visibleThoughts.length, 0);
   const hiddenTrades = Math.max(trades.length - visibleTrades.length, 0);
 
-  // Show loading or error state
+  // Show loading or *fatal* error state
   if (isLoading) {
     return (
       <div className="flex items-center justify-center min-h-[calc(100vh-120px)]">
@@ -484,7 +494,10 @@ export function BattleScreen({ sessionId }: BattleScreenProps) {
     );
   }
 
-  if (error || wsError) {
+  // Treat API errors as fatal, but WebSocket errors are transient because
+  // the hook will auto-reconnect. WS issues are surfaced via the "Offline"
+  // badge and console logs instead of a full-screen error.
+  if (error) {
     return (
       <div className="flex items-center justify-center min-h-[calc(100vh-120px)]">
         <Card className="border-destructive/40 bg-destructive/10">
@@ -493,7 +506,7 @@ export function BattleScreen({ sessionId }: BattleScreenProps) {
               <AlertCircle className="h-8 w-8 text-destructive" />
               <div>
                 <p className="text-sm font-medium text-destructive">Error loading session</p>
-                <p className="text-xs text-muted-foreground mt-2">{error || wsError}</p>
+                <p className="text-xs text-muted-foreground mt-2">{error}</p>
               </div>
               <Button variant="outline" size="sm" onClick={() => router.push("/dashboard/arena/backtest")}>
                 Back to Arena
@@ -887,6 +900,9 @@ export function BattleScreen({ sessionId }: BattleScreenProps) {
                   </div>
                 ) : (
                   visibleTrades.map((trade, index) => {
+                    const tradeNumber = trade.tradeNumber ?? index + 1;
+                    const formattedPnl = trade.pnlPercent.toFixed(2);
+                    
                     const topContent = (
                       <div className={cn(
                         "flex items-center justify-between rounded-t px-2 py-1.5",
@@ -896,7 +912,7 @@ export function BattleScreen({ sessionId }: BattleScreenProps) {
                       )}>
                         <div className="flex items-center gap-1.5">
                           <span className="font-mono text-xs font-bold text-foreground">
-                            #{index + 1}
+                            #{tradeNumber}
                           </span>
                           <Badge className={cn(
                             "text-[8px] h-4 px-1",
@@ -909,7 +925,7 @@ export function BattleScreen({ sessionId }: BattleScreenProps) {
                           "font-mono text-sm font-bold",
                           trade.pnl >= 0 ? "text-[hsl(var(--accent-profit))]" : "text-[hsl(var(--accent-red))]"
                         )}>
-                          {trade.pnl >= 0 ? "+" : ""}{trade.pnlPercent}%
+                          {trade.pnl >= 0 ? "+" : ""}{formattedPnl}%
                         </span>
                       </div>
                     );
@@ -935,7 +951,9 @@ export function BattleScreen({ sessionId }: BattleScreenProps) {
                           </div>
                           <div className="rounded border border-border/50 bg-muted/20 p-1.5">
                             <p className="text-[9px] text-muted-foreground">Size</p>
-                            <p className="font-mono text-[10px] font-medium">0.5 BTC</p>
+                            <p className="font-mono text-[10px] font-medium">
+                              {trade.size > 0 ? trade.size.toFixed(4) : "—"}
+                            </p>
                           </div>
                         </div>
                         <div className={cn(

@@ -185,7 +185,7 @@ class BacktestEngine:
                 candles=candles,
                 enabled_indicators=agent.indicators,
                 mode=agent.mode,
-                custom_indicators=agent.custom_indicators
+                custom_indicators=agent.custom_indicators,
             )
             
             # Initialize position manager
@@ -210,6 +210,19 @@ class BacktestEngine:
                 mode=agent.mode
             )
             
+            # Compute when it's safe to start asking the LLM for decisions
+            # (after all requested indicators have enough history).
+            decision_start_index = IndicatorCalculator.compute_min_history(agent.indicators)
+            
+            # Load playback speed from session
+            async with self.session_factory() as db:
+                from models.arena import TestSession
+                session_result = await db.execute(
+                    select(TestSession).where(TestSession.id == session_id)
+                )
+                session_record = session_result.scalar_one_or_none()
+                playback_speed = session_record.playback_speed if session_record and session_record.playback_speed else "normal"
+            
             # Create session state
             session_state = SessionState(
                 session_id=session_id,
@@ -219,7 +232,9 @@ class BacktestEngine:
                 position_manager=position_manager,
                 indicator_calculator=indicator_calculator,
                 ai_trader=ai_trader,
+                decision_start_index=decision_start_index,
                 allow_leverage=allow_leverage,
+                playback_speed=playback_speed,
             )
             
             # Store session state
@@ -254,6 +269,25 @@ class BacktestEngine:
                 await self.database_manager.update_session_status(db, session_id, "failed")
             await self.broadcaster.broadcast_error(session_id, str(e))
             raise
+    
+    @staticmethod
+    def _get_playback_delay(playback_speed: str) -> int:
+        """
+        Get delay in milliseconds for playback speed.
+        
+        Args:
+            playback_speed: Speed setting ('slow', 'normal', 'fast', 'instant')
+            
+        Returns:
+            Delay in milliseconds
+        """
+        speed_map = {
+            "slow": 1000,      # 1 second per candle
+            "normal": 500,     # 500ms per candle
+            "fast": 200,       # 200ms per candle
+            "instant": 0       # No delay
+        }
+        return speed_map.get(playback_speed, 500)  # Default to normal
     
     @staticmethod
     def _coerce_to_datetime(value: Union[datetime, date], field_name: str) -> datetime:
@@ -366,6 +400,12 @@ class BacktestEngine:
                     await self.database_manager.update_session_current_candle(
                         db, session_id, session_state.current_index
                     )
+                    
+                    # Apply playback speed delay (except for instant)
+                    if session_state.playback_speed != "instant":
+                        delay_ms = self._get_playback_delay(session_state.playback_speed)
+                        if delay_ms > 0:
+                            await asyncio.sleep(delay_ms / 1000.0)
                 
                 # Backtest completed
                 if not session_state.is_stopped:

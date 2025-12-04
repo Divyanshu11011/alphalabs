@@ -51,6 +51,43 @@ class IndicatorCalculator:
         'dc': ['donchian'],
         'ad': ['ad_line'],
     }
+
+    # Approximate minimum history (in bars) required before each indicator
+    # produces stable, non-null values. Used to decide when it's safe to call
+    # the LLM for trading decisions.
+    INDICATOR_MIN_HISTORY: Dict[str, int] = {
+        # Momentum
+        'rsi': 14,
+        'stoch': 14,
+        'cci': 20,
+        'mom': 10,
+        'ao': 5,
+        # Trend
+        'macd': 26,   # slow EMA window
+        'ema_20': 20,
+        'ema_50': 50,
+        'ema_200': 200,
+        'sma_20': 20,
+        'sma_50': 50,
+        'sma_200': 200,
+        'adx': 14,
+        'psar': 5,
+        # Volatility
+        'bbands': 20,
+        'atr': 14,
+        'kc': 20,
+        'donchian': 20,
+        # Volume
+        'obv': 1,
+        'vwap': 1,
+        'mfi': 14,
+        'cmf': 20,
+        'ad_line': 1,
+        # Advanced
+        'supertrend': 10,
+        'ichimoku': 26,
+        'zscore': 20,
+    }
     
     ALL_INDICATORS = (
         MOMENTUM_INDICATORS + 
@@ -104,13 +141,20 @@ class IndicatorCalculator:
             if self.custom_indicator_rules:
                 self._initialize_custom_indicators()
     
-    def _normalize_indicators(self, enabled_indicators: List[str]) -> List[str]:
+    @classmethod
+    def _normalize_indicators(cls, enabled_indicators: List[str]) -> List[str]:
+        """
+        Normalize requested indicator names:
+        - Lowercase / trim
+        - Expand aliases (e.g. 'ema' -> ['ema_20','ema_50','ema_200'])
+        - Deduplicate while preserving order
+        """
         normalized: List[str] = []
         for indicator in enabled_indicators or []:
             key = indicator.strip().lower()
             if not key:
                 continue
-            mapped = self.INDICATOR_ALIAS_MAP.get(key)
+            mapped = cls.INDICATOR_ALIAS_MAP.get(key)
             if mapped:
                 normalized.extend(mapped)
             else:
@@ -443,3 +487,20 @@ class IndicatorCalculator:
         if self.custom_engine:
             return self.custom_engine.get_custom_indicator_names()
         return []
+
+    @classmethod
+    def compute_min_history(cls, enabled_indicators: List[str]) -> int:
+        """
+        Compute the approximate minimum number of candles required before all
+        requested indicators are expected to have non-null values.
+
+        This is a conservative estimate used to decide when it's reasonable to
+        start asking the LLM for trading decisions.
+        """
+        normalized = cls._normalize_indicators(enabled_indicators)
+        max_history = 0
+        for ind in normalized:
+            required = cls.INDICATOR_MIN_HISTORY.get(ind, 0)
+            if required > max_history:
+                max_history = required
+        return max_history

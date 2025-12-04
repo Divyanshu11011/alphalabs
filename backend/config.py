@@ -57,14 +57,18 @@ class Settings(BaseSettings):
     MAX_WEBSOCKET_CONNECTIONS: int = 100
     
     # Timeouts (in seconds)
-    AI_DECISION_TIMEOUT: int = 30
+    # How long we wait for an LLM trading decision before falling back to HOLD.
+    # Kept intentionally low so backtests don't freeze the UI if OpenRouter is slow.
+    AI_DECISION_TIMEOUT: int = 10
     MARKET_DATA_TIMEOUT: int = 10
     WEBSOCKET_HEARTBEAT_INTERVAL: int = 30
     
     # Retry Configuration
-    MAX_RETRIES: int = 3
+    # For trading decisions we generally want to fail fast rather than stall
+    # the entire backtest on repeated timeouts.
+    MAX_RETRIES: int = 1
     RETRY_BASE_DELAY: float = 1.0
-    RETRY_MAX_DELAY: float = 10.0
+    RETRY_MAX_DELAY: float = 5.0
     
     # Circuit Breaker Configuration
     CIRCUIT_BREAKER_FAILURE_THRESHOLD: int = 5
