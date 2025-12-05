@@ -34,7 +34,7 @@ export default function LD2DashboardPreview() {
         </p>
       </motion.div>
 
-      {/* Dashboard Screenshot */}
+      {/* Dashboard Preview Video */}
       <motion.div
         className="w-full border border-gray-200 p-2 rounded-3xl bg-white"
         initial={{ opacity: 0, y: 40 }}
@@ -43,9 +43,12 @@ export default function LD2DashboardPreview() {
       >
         <div className="relative w-full">
           <div className="relative w-full rounded-2xl overflow-hidden border border-gray-100 shadow-2xl">
-            <img
-              src="https://ui.shadcn.com/examples/dashboard-light.png"
-              alt="AlphaLabs Dashboard Preview"
+            <video
+              src="/lpv.mp4"
+              autoPlay
+              loop
+              muted
+              playsInline
               className="w-full h-full object-center block rounded-2xl"
             />
           </div>

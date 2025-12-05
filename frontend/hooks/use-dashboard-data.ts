@@ -1,5 +1,6 @@
 import { useApiClient } from "@/lib/api";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useGlobalRefreshStore } from "@/lib/stores";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ActivityItem, DashboardStats, QuickStartStep } from "@/types";
 
 interface DashboardDataState {
@@ -81,9 +82,9 @@ const mapStats = (payload: DashboardStatsResponse["stats"]): DashboardStats => (
   },
   bestAgent: payload.best_agent
     ? {
-        id: payload.best_agent.id,
-        name: payload.best_agent.name,
-      }
+      id: payload.best_agent.id,
+      name: payload.best_agent.name,
+    }
     : undefined,
 });
 
@@ -109,6 +110,8 @@ const mapQuickStart = (item: QuickStartResponse["steps"][number]): QuickStartSte
 
 export function useDashboardData(): DashboardDataState {
   const { get } = useApiClient();
+  const dashboardKey = useGlobalRefreshStore((s) => s.dashboardKey);
+  const initialKeyRef = useRef(dashboardKey);
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [averageProfit, setAverageProfit] = useState<number | null>(null);
   const [activity, setActivity] = useState<ActivityItem[]>([]);
@@ -145,6 +148,14 @@ export function useDashboardData(): DashboardDataState {
   useEffect(() => {
     void fetchAll();
   }, [fetchAll]);
+
+  // Subscribe to global refresh - refetch when dashboardKey changes
+  useEffect(() => {
+    // Skip initial mount (already fetched above)
+    if (dashboardKey !== initialKeyRef.current) {
+      void fetchAll();
+    }
+  }, [dashboardKey, fetchAll]);
 
   return useMemo(
     () => ({

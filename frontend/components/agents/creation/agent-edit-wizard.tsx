@@ -12,7 +12,7 @@ import { StepIdentity } from "./step-identity";
 import { StepModelApi } from "./step-model-api";
 import { StepDataBuffet } from "./step-data-buffet";
 import { StepStrategyPrompt } from "./step-strategy-prompt";
-import { useAgentsStore } from "@/lib/stores";
+import { useAgentsStore, useGlobalRefresh } from "@/lib/stores";
 import { useAgents } from "@/hooks/use-agents";
 import { useApiKeys } from "@/hooks/use-api-keys";
 import type { AgentFormData } from "@/types/agent";
@@ -33,6 +33,7 @@ export function AgentEditWizard({ agentId }: AgentEditWizardProps) {
   const { agents } = useAgentsStore();
   const { updateAgent } = useAgents();
   const { createApiKey } = useApiKeys();
+  const { refreshAll } = useGlobalRefresh();
   // Start at Data Buffet (step 3) when editing - most common edit
   const [currentStep, setCurrentStep] = useState(3);
   const [isLoading, setIsLoading] = useState(true);
@@ -104,7 +105,7 @@ export function AgentEditWizard({ agentId }: AgentEditWizardProps) {
 
   const handleSave = async () => {
     if (isSaving) return;
-    
+
     setIsSaving(true);
     try {
       let apiKeyId: string | undefined = undefined;
@@ -115,8 +116,8 @@ export function AgentEditWizard({ agentId }: AgentEditWizardProps) {
           const newKey = await createApiKey({
             provider: "openrouter",
             api_key: formData.apiKey,
-            label: formData.saveApiKey 
-              ? `${formData.name} - OpenRouter` 
+            label: formData.saveApiKey
+              ? `${formData.name} - OpenRouter`
               : `Temp - ${formData.name}`,
             set_as_default: formData.saveApiKey,
           });
@@ -144,8 +145,9 @@ export function AgentEditWizard({ agentId }: AgentEditWizardProps) {
       }
 
       await updateAgent(agentId, updateData);
-      
+
       toast.success(`Agent "${formData.name}" updated successfully!`);
+      refreshAll(); // Trigger global refresh for all stores
       router.push(`/dashboard/agents/${agentId}`);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : "Failed to update agent";
@@ -211,8 +213,8 @@ export function AgentEditWizard({ agentId }: AgentEditWizardProps) {
                     currentStep > step.id
                       ? "border-[hsl(var(--brand-flame))] bg-[hsl(var(--brand-flame))] text-white"
                       : currentStep === step.id
-                      ? "border-[hsl(var(--brand-flame))] text-[hsl(var(--brand-flame))]"
-                      : "border-border text-muted-foreground"
+                        ? "border-[hsl(var(--brand-flame))] text-[hsl(var(--brand-flame))]"
+                        : "border-border text-muted-foreground"
                   )}
                 >
                   {currentStep > step.id ? (
@@ -297,7 +299,7 @@ export function AgentEditWizard({ agentId }: AgentEditWizardProps) {
               disabled={!canProceed() || isSaving}
               className={cn(
                 currentStep === 4 &&
-                  "bg-[hsl(var(--brand-flame))] text-white hover:bg-[hsl(var(--brand-flame))]/90"
+                "bg-[hsl(var(--brand-flame))] text-white hover:bg-[hsl(var(--brand-flame))]/90"
               )}
             >
               {isSaving ? (

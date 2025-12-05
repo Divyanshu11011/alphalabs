@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef } from "react";
 import { useApiClient } from "@/lib/api";
 import { useAgentsStore } from "@/lib/stores/agents-store";
+import { useGlobalRefreshStore } from "@/lib/stores";
 import type { Agent, AgentMode } from "@/types/agent";
 
 export interface CustomIndicator {
@@ -90,6 +91,10 @@ export function useAgents(initialFilters?: AgentFilters, includeArchived = false
     setLastQueryKey,
   } = useAgentsStore((state) => state);
 
+  // Subscribe to global refresh
+  const agentsKey = useGlobalRefreshStore((s) => s.agentsKey);
+  const initialAgentsKeyRef = useRef(agentsKey);
+
   const appliedInitialFilters = useRef(false);
   useEffect(() => {
     if (initialFilters && !appliedInitialFilters.current) {
@@ -101,12 +106,12 @@ export function useAgents(initialFilters?: AgentFilters, includeArchived = false
   const fetchAgents = useCallback(async (force = false) => {
     // Get current state values from store to check if we should skip
     const storeState = useAgentsStore.getState();
-    
+
     // Prevent concurrent fetches
     if (storeState.isLoading && !force) {
       return;
     }
-    
+
     setLoading(true);
     setError(null);
     try {
@@ -122,10 +127,10 @@ export function useAgents(initialFilters?: AgentFilters, includeArchived = false
       const fullQuery = queryString ? `${queryString}${archivedParam}` : archivedParam ? `?${archivedParam.slice(1)}` : "";
       // Create a full query key that matches the actual query sent to API
       const fullQueryKey = fullQuery;
-      
+
       const currentLastQueryKey = storeState.lastQueryKey;
       const currentAgents = storeState.agents;
-      
+
       // Only skip if not forcing and query key matches and we have data
       if (!force && currentLastQueryKey === fullQueryKey && currentAgents.length > 0) {
         setLoading(false);
@@ -146,26 +151,26 @@ export function useAgents(initialFilters?: AgentFilters, includeArchived = false
 
   // Track previous values to prevent unnecessary fetches
   const prevValuesRef = useRef({ includeArchived, filters });
-  
+
   useEffect(() => {
     const storeState = useAgentsStore.getState();
-    
+
     // Skip if already loading
     if (storeState.isLoading) {
       return;
     }
-    
+
     // Check if anything actually changed
     const includeArchivedChanged = prevValuesRef.current.includeArchived !== includeArchived;
-    const filtersChanged = 
+    const filtersChanged =
       prevValuesRef.current.filters.search !== filters.search ||
       prevValuesRef.current.filters.mode !== filters.mode ||
       prevValuesRef.current.filters.model !== filters.model ||
       prevValuesRef.current.filters.sort !== filters.sort;
-    
+
     // Update ref
     prevValuesRef.current = { includeArchived, filters };
-    
+
     // Only fetch if something changed
     if (includeArchivedChanged || filtersChanged) {
       void fetchAgents(includeArchivedChanged);
@@ -177,6 +182,14 @@ export function useAgents(initialFilters?: AgentFilters, includeArchived = false
       }
     }
   }, [includeArchived, filters.search, filters.mode, filters.model, filters.sort, fetchAgents]);
+
+  // Subscribe to global refresh - refetch when agentsKey changes
+  useEffect(() => {
+    // Skip initial mount (already fetched above)
+    if (agentsKey !== initialAgentsKeyRef.current) {
+      void fetchAgents(true);
+    }
+  }, [agentsKey, fetchAgents]);
 
   const updateFilters = useCallback(
     (partial: AgentFilters) => {

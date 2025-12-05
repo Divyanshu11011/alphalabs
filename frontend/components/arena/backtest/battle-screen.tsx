@@ -30,7 +30,7 @@ import { Separator } from "@/components/ui/separator";
 import { ShiftCard } from "@/components/ui/shift-card";
 import { cn } from "@/lib/utils";
 import { CandlestickChart } from "@/components/charts/candlestick-chart";
-import { useAgentsStore, useArenaStore, useDynamicIslandStore, useResultsStore } from "@/lib/stores";
+import { useAgentsStore, useArenaStore, useDynamicIslandStore, useResultsStore, useGlobalRefresh } from "@/lib/stores";
 import { useArenaApi } from "@/hooks/use-arena-api";
 import { useBacktestWebSocket, type WebSocketEvent } from "@/hooks/use-backtest-websocket";
 import { useResultsApi } from "@/hooks/use-results-api";
@@ -45,10 +45,10 @@ interface BattleScreenProps {
 
 export function BattleScreen({ sessionId }: BattleScreenProps) {
   const router = useRouter();
-  
+
   // Get config and agents from stores
-  const { 
-    backtestConfig, 
+  const {
+    backtestConfig,
     sessionData,
     addCandle,
     addTrade,
@@ -62,7 +62,8 @@ export function BattleScreen({ sessionId }: BattleScreenProps) {
   const { getBacktestStatus } = useArenaApi();
   const { fetchTrades, fetchReasoning } = useResultsApi();
   const { post } = useApiClient();
-  
+  const { refreshResults, refreshDashboard } = useGlobalRefresh();
+
   // Dynamic Island controls
   const {
     showAnalyzing,
@@ -73,7 +74,7 @@ export function BattleScreen({ sessionId }: BattleScreenProps) {
     celebrate,
     hide,
   } = useDynamicIslandStore();
-  
+
   // State for session data
   const [sessionStatus, setSessionStatus] = useState<{
     status: string;
@@ -90,11 +91,11 @@ export function BattleScreen({ sessionId }: BattleScreenProps) {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [resultId, setResultId] = useState<string | null>(null);
-  
+
   // Get config values with fallbacks
   const initialCapital = backtestConfig?.capital ?? 10000;
   const asset = sessionStatus?.asset || backtestConfig?.asset || "btc-usdt";
-  
+
   // Get session data from Zustand store
   const currentSessionData = sessionData[sessionId] || {
     candles: [],
@@ -106,7 +107,7 @@ export function BattleScreen({ sessionId }: BattleScreenProps) {
     currentCandle: 0,
     totalCandles: 0,
   };
-  
+
   // Find the selected agent from store
   const agent = useMemo(() => {
     const agentId = sessionStatus?.agent_id || backtestConfig?.agentId;
@@ -118,14 +119,14 @@ export function BattleScreen({ sessionId }: BattleScreenProps) {
 
   // Get agent name - use from store if available, otherwise from API response
   const agentName = agent?.name || sessionStatus?.agent_name || "Unknown Agent";
-  
+
   // Use data from Zustand store instead of local state
   const candles = currentSessionData.candles;
   const thoughts = currentSessionData.thoughts;
   const trades = currentSessionData.trades;
   const equity = currentSessionData.equity;
   const pnl = currentSessionData.pnl;
-  
+
   // UI state
   const [isCompactLayout, setIsCompactLayout] = useState(false);
   const [expandedSections, setExpandedSections] = useState({
@@ -202,7 +203,7 @@ export function BattleScreen({ sessionId }: BattleScreenProps) {
                 : undefined,
           };
           addThought(sessionId, thought);
-          
+
           // Show in dynamic island if it's a trade decision
           if (event.data.action && event.data.action !== "HOLD") {
             narrate(thought.content, "info");
@@ -238,7 +239,7 @@ export function BattleScreen({ sessionId }: BattleScreenProps) {
             takeProfit: event.data.take_profit,
           };
           addTrade(sessionId, trade);
-          
+
           // Show trade executed in dynamic island
           showTradeExecuted({
             direction: trade.type as "long" | "short",
@@ -267,8 +268,10 @@ export function BattleScreen({ sessionId }: BattleScreenProps) {
         if (event.data?.result_id) {
           setResultId(event.data.result_id);
           clearActiveSessionId();
-          // Trigger refresh of results store so new result appears
+          // Trigger refresh of results and dashboard stores so new result appears
           triggerResultsRefresh();
+          refreshResults();
+          refreshDashboard();
           // Navigate to results page
           setTimeout(() => {
             router.push(`/dashboard/results/${event.data.result_id}`);
@@ -291,7 +294,7 @@ export function BattleScreen({ sessionId }: BattleScreenProps) {
   const statusChanged = useCallback((newStatus: typeof sessionStatus, prevStatus: typeof sessionStatus): boolean => {
     if (!prevStatus) return true; // First load
     if (!newStatus) return false;
-    
+
     // Compare all relevant fields
     return (
       newStatus.status !== prevStatus.status ||
@@ -311,14 +314,14 @@ export function BattleScreen({ sessionId }: BattleScreenProps) {
   useEffect(() => {
     const fetchInitialStatus = async () => {
       if (!sessionId) return;
-      
+
       try {
         // Don't block UI - show loading state but allow WebSocket to start
         setIsLoading(true);
         setError(null);
-        
+
         const status = await getBacktestStatus(sessionId);
-        
+
         // Only update if status actually changed (memoization)
         if (statusChanged(status, previousStatusRef.current)) {
           previousStatusRef.current = status;
@@ -332,7 +335,7 @@ export function BattleScreen({ sessionId }: BattleScreenProps) {
             totalCandles: status.total_candles,
           });
         }
-        
+
         // If session is completed, fetch trades and thoughts from results
         if (status.status === "completed") {
           // Try to find result ID - we might need to fetch it from results list
@@ -349,7 +352,7 @@ export function BattleScreen({ sessionId }: BattleScreenProps) {
 
     // Fetch in background, don't block render
     void fetchInitialStatus();
-    
+
     // Poll for status updates every 10 seconds if not connected via WebSocket (reduced frequency)
     const pollInterval = setInterval(() => {
       if (!isConnected && sessionId) {
@@ -393,7 +396,7 @@ export function BattleScreen({ sessionId }: BattleScreenProps) {
   // Update visible candles based on current progress
   // Sync with backend's currentCandle to ensure chart stays in sync with processing
   const playbackSpeed = backtestConfig?.speed ?? "normal";
-  
+
   // For instant mode, show all candles immediately
   // For other modes, sync displayCandleCount with backend's currentCandle
   // currentCandle is 0-indexed, so if currentCandle=50, we've processed 51 candles (0-50)
@@ -475,7 +478,7 @@ export function BattleScreen({ sessionId }: BattleScreenProps) {
         router.push(`/dashboard/results/${resultId}`);
         return;
       }
-      
+
       // If session is still running, call stop API
       if (sessionStatus?.status === "running" || sessionStatus?.status === "paused") {
         const response = await post(`/api/arena/backtest/${sessionId}/stop`, {
@@ -522,12 +525,12 @@ export function BattleScreen({ sessionId }: BattleScreenProps) {
       // Check if we're currently showing a trade or alpha (priority states)
       const islandState = useDynamicIslandStore.getState();
       const isPriorityMode = islandState.mode === "trade" || islandState.mode === "alpha" || islandState.mode === "celebration";
-      
+
       // Only show analyzing if not in a priority state
       if (!isPriorityMode) {
         // Show what AI is doing - phase based on progress
-        const phase = progress < 30 ? "scanning" : 
-                     progress < 70 ? "analyzing" : "deciding";
+        const phase = progress < 30 ? "scanning" :
+          progress < 70 ? "analyzing" : "deciding";
         showAnalyzing({
           message: NARRATOR_MESSAGES.analyzing,
           phase,
@@ -543,11 +546,11 @@ export function BattleScreen({ sessionId }: BattleScreenProps) {
 
   // Track last thought count to show AI thoughts in Dynamic Island
   const lastThoughtCountRef = useRef(0);
-  
+
   // Show AI thoughts in Dynamic Island when new thoughts are added
   useEffect(() => {
     if (thoughts.length === 0 || sessionStatus?.status !== "running") return;
-    
+
     // Check if we have a new thought
     if (thoughts.length > lastThoughtCountRef.current) {
       const latestThought = thoughts[0];
@@ -691,14 +694,14 @@ export function BattleScreen({ sessionId }: BattleScreenProps) {
   }
 
   const renderThought = (thought: AIThought) => (
-    <motion.div 
-      key={thought.id} 
+    <motion.div
+      key={thought.id}
       initial={{ opacity: 0, y: -10, scale: 0.95 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
       exit={{ opacity: 0, scale: 0.95 }}
-      transition={{ 
-        type: "spring", 
-        stiffness: 400, 
+      transition={{
+        type: "spring",
+        stiffness: 400,
         damping: 25,
         mass: 0.5
       }}
@@ -764,7 +767,7 @@ export function BattleScreen({ sessionId }: BattleScreenProps) {
           )}
           <Separator orientation="vertical" className="h-3 hidden sm:block" />
           <div className="flex items-center gap-2 text-[10px] sm:text-xs">
-            <span className="font-mono font-bold">${(equity/1000).toFixed(1)}k</span>
+            <span className="font-mono font-bold">${(equity / 1000).toFixed(1)}k</span>
             <span className={cn(
               "font-mono font-bold",
               pnl >= 0 ? "text-[hsl(var(--accent-profit))]" : "text-[hsl(var(--accent-red))]"
@@ -820,9 +823,9 @@ export function BattleScreen({ sessionId }: BattleScreenProps) {
           )}
 
           {sessionStatus?.status === "running" && currentCandle > 0 && progress < 100 && (
-            <Button 
-              variant="destructive" 
-              size="sm" 
+            <Button
+              variant="destructive"
+              size="sm"
               onClick={async () => {
                 try {
                   const response = await post(`/api/arena/backtest/${sessionId}/stop`, {
@@ -837,7 +840,7 @@ export function BattleScreen({ sessionId }: BattleScreenProps) {
                   console.error("Error stopping:", err);
                   toast.error(err instanceof Error ? err.message : "Failed to stop backtest");
                 }
-              }} 
+              }}
               className="h-7 px-2"
             >
               <Square className="h-3 w-3" />
@@ -845,15 +848,15 @@ export function BattleScreen({ sessionId }: BattleScreenProps) {
           )}
 
           {sessionStatus?.status === "completed" && (
-            <Button 
-              size="sm" 
+            <Button
+              size="sm"
               onClick={() => {
                 if (resultId) {
                   router.push(`/dashboard/results/${resultId}`);
                 } else {
                   router.push("/dashboard/results");
                 }
-              }} 
+              }}
               className="h-7 px-2 text-xs bg-[hsl(var(--accent-profit))] text-black hover:bg-[hsl(var(--accent-profit))]/90"
             >
               View Results
@@ -968,7 +971,7 @@ export function BattleScreen({ sessionId }: BattleScreenProps) {
               </Button>
             )}
           </div>
-          
+
           {/* Trade list - hover for details */}
           {isCompactLayout ? (
             <div className="p-1.5 space-y-1.5">
@@ -982,8 +985,8 @@ export function BattleScreen({ sessionId }: BattleScreenProps) {
                   const topContent = (
                     <div className={cn(
                       "flex items-center justify-between rounded-t px-2 py-1.5",
-                      trade.pnl >= 0 
-                        ? "bg-[hsl(var(--accent-profit)/0.15)]" 
+                      trade.pnl >= 0
+                        ? "bg-[hsl(var(--accent-profit)/0.15)]"
                         : "bg-[hsl(var(--accent-red)/0.15)]"
                     )}>
                       <div className="flex items-center gap-1.5">
@@ -1016,8 +1019,8 @@ export function BattleScreen({ sessionId }: BattleScreenProps) {
                   const bottomContent = (
                     <div className={cn(
                       "px-2 pb-2 pt-1 space-y-1.5 border-t",
-                      trade.pnl >= 0 
-                        ? "bg-[hsl(var(--accent-profit)/0.05)] border-[hsl(var(--accent-profit)/0.2)]" 
+                      trade.pnl >= 0
+                        ? "bg-[hsl(var(--accent-profit)/0.05)] border-[hsl(var(--accent-profit)/0.2)]"
                         : "bg-[hsl(var(--accent-red)/0.05)] border-[hsl(var(--accent-red)/0.2)]"
                     )}>
                       <div className="grid grid-cols-2 gap-1.5">
@@ -1032,8 +1035,8 @@ export function BattleScreen({ sessionId }: BattleScreenProps) {
                       </div>
                       <div className={cn(
                         "rounded p-1.5 text-center",
-                        trade.pnl >= 0 
-                          ? "bg-[hsl(var(--accent-profit)/0.15)]" 
+                        trade.pnl >= 0
+                          ? "bg-[hsl(var(--accent-profit)/0.15)]"
                           : "bg-[hsl(var(--accent-red)/0.15)]"
                       )}>
                         <p className="text-[9px] text-muted-foreground">P/L</p>
@@ -1052,8 +1055,8 @@ export function BattleScreen({ sessionId }: BattleScreenProps) {
                       key={trade.id}
                       className={cn(
                         "border",
-                        trade.pnl >= 0 
-                          ? "border-[hsl(var(--accent-profit)/0.3)]" 
+                        trade.pnl >= 0
+                          ? "border-[hsl(var(--accent-profit)/0.3)]"
                           : "border-[hsl(var(--accent-red)/0.3)]"
                       )}
                       topContent={topContent}
@@ -1076,12 +1079,12 @@ export function BattleScreen({ sessionId }: BattleScreenProps) {
                   visibleTrades.map((trade, index) => {
                     const tradeNumber = trade.tradeNumber ?? index + 1;
                     const formattedPnl = trade.pnlPercent.toFixed(2);
-                    
+
                     const topContent = (
                       <div className={cn(
                         "flex items-center justify-between rounded-t px-2 py-1.5",
-                        trade.pnl >= 0 
-                          ? "bg-[hsl(var(--accent-profit)/0.15)]" 
+                        trade.pnl >= 0
+                          ? "bg-[hsl(var(--accent-profit)/0.15)]"
                           : "bg-[hsl(var(--accent-red)/0.15)]"
                       )}>
                         <div className="flex items-center gap-1.5">
@@ -1114,8 +1117,8 @@ export function BattleScreen({ sessionId }: BattleScreenProps) {
                     const bottomContent = (
                       <div className={cn(
                         "px-2 pb-2 pt-1 space-y-1.5 border-t",
-                        trade.pnl >= 0 
-                          ? "bg-[hsl(var(--accent-profit)/0.05)] border-[hsl(var(--accent-profit)/0.2)]" 
+                        trade.pnl >= 0
+                          ? "bg-[hsl(var(--accent-profit)/0.05)] border-[hsl(var(--accent-profit)/0.2)]"
                           : "bg-[hsl(var(--accent-red)/0.05)] border-[hsl(var(--accent-red)/0.2)]"
                       )}>
                         <div className="grid grid-cols-2 gap-1.5">
@@ -1132,8 +1135,8 @@ export function BattleScreen({ sessionId }: BattleScreenProps) {
                         </div>
                         <div className={cn(
                           "rounded p-1.5 text-center",
-                          trade.pnl >= 0 
-                            ? "bg-[hsl(var(--accent-profit)/0.15)]" 
+                          trade.pnl >= 0
+                            ? "bg-[hsl(var(--accent-profit)/0.15)]"
                             : "bg-[hsl(var(--accent-red)/0.15)]"
                         )}>
                           <p className="text-[9px] text-muted-foreground">P/L</p>
@@ -1152,8 +1155,8 @@ export function BattleScreen({ sessionId }: BattleScreenProps) {
                         key={trade.id}
                         className={cn(
                           "border",
-                          trade.pnl >= 0 
-                            ? "border-[hsl(var(--accent-profit)/0.3)]" 
+                          trade.pnl >= 0
+                            ? "border-[hsl(var(--accent-profit)/0.3)]"
                             : "border-[hsl(var(--accent-red)/0.3)]"
                         )}
                         topContent={topContent}

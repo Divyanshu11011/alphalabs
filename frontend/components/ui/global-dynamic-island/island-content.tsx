@@ -1,3 +1,4 @@
+import React from "react";
 import type {
   IslandMode,
   TradeData,
@@ -39,6 +40,7 @@ export interface IslandContentProps {
 
 /**
  * Main content switcher component that renders the appropriate content based on mode
+ * Each case returns a keyed fragment to ensure AnimatePresence can properly track transitions
  */
 export const IslandContent = ({
   mode,
@@ -55,58 +57,75 @@ export const IslandContent = ({
   renderAnalyzing,
   renderLiveSession,
 }: IslandContentProps) => {
-  switch (mode) {
-    case "idle":
-      return idleContent || <IdleContent totalAgents={totalAgents} averageProfit={averageProfit} isExpanded={isExpanded} />;
-      
-    case "analyzing":
-      if (renderAnalyzing) {
-        return renderAnalyzing(data as AnalyzingData, isExpanded);
-      }
-      return <AnalyzingContent data={data as AnalyzingData} isExpanded={isExpanded} />;
-      
-    case "narrator":
-      if (renderNarrator && data) {
-        return renderNarrator(data as NarratorData, isExpanded);
-      }
-      return data ? <NarratorContent data={data as NarratorData} isExpanded={isExpanded} /> : null;
-      
-    case "trade":
-      if (renderTrade && data) {
-        return renderTrade(data as TradeData, isExpanded);
-      }
-      return data ? <TradeContent data={data as TradeData} isExpanded={isExpanded} /> : null;
-      
-    case "alpha":
-      if (renderAlpha && data) {
-        return renderAlpha(data as AlphaData, isExpanded);
-      }
-      return data ? <AlphaContent data={data as AlphaData} /> : null;
-      
-    case "celebration":
-      if (renderCelebration && data) {
-        return renderCelebration(data as CelebrationData, isExpanded);
-      }
-      return data ? <CelebrationContent data={data as CelebrationData} /> : null;
-      
-    case "connection":
-      if (renderConnection && data) {
-        return renderConnection(data as ConnectionData, isExpanded);
-      }
-      return data ? <ConnectionContent data={data as ConnectionData} /> : null;
-      
-    case "liveSession":
-      if (renderLiveSession && data) {
-        return renderLiveSession(data as LiveSessionData, isExpanded);
-      }
-      return data ? <LiveSessionContent data={data as LiveSessionData} isExpanded={isExpanded} /> : null;
-      
-    case "preparing":
-      return data ? <PreparingContent type={(data as PreparingData).type} isExpanded={isExpanded} /> : null;
-      
-    case "hidden":
-    default:
-      return null;
-  }
-};
+  // Generate a unique key for AnimatePresence based on mode
+  // This ensures proper animation transitions between modes
+  const getContent = (): React.ReactNode => {
+    switch (mode) {
+      case "idle":
+        return idleContent || <IdleContent totalAgents={totalAgents} averageProfit={averageProfit} isExpanded={isExpanded} />;
 
+      case "analyzing":
+        if (renderAnalyzing) {
+          return renderAnalyzing(data as AnalyzingData, isExpanded);
+        }
+        return <AnalyzingContent data={data as AnalyzingData} isExpanded={isExpanded} />;
+
+      case "narrator":
+        if (renderNarrator && data) {
+          return renderNarrator(data as NarratorData, isExpanded);
+        }
+        return data ? <NarratorContent data={data as NarratorData} isExpanded={isExpanded} /> : null;
+
+      case "trade":
+        if (renderTrade && data) {
+          return renderTrade(data as TradeData, isExpanded);
+        }
+        return data ? <TradeContent data={data as TradeData} isExpanded={isExpanded} /> : null;
+
+      case "alpha":
+        if (renderAlpha && data) {
+          return renderAlpha(data as AlphaData, isExpanded);
+        }
+        return data ? <AlphaContent data={data as AlphaData} /> : null;
+
+      case "celebration":
+        if (renderCelebration && data) {
+          return renderCelebration(data as CelebrationData, isExpanded);
+        }
+        return data ? <CelebrationContent data={data as CelebrationData} /> : null;
+
+      case "connection":
+        if (renderConnection && data) {
+          return renderConnection(data as ConnectionData, isExpanded);
+        }
+        return data ? <ConnectionContent data={data as ConnectionData} /> : null;
+
+      case "liveSession":
+        if (renderLiveSession && data) {
+          return renderLiveSession(data as LiveSessionData, isExpanded);
+        }
+        return data ? <LiveSessionContent data={data as LiveSessionData} isExpanded={isExpanded} /> : null;
+
+      case "preparing":
+        return data ? <PreparingContent type={(data as PreparingData).type} isExpanded={isExpanded} /> : null;
+
+      case "hidden":
+      default:
+        return null;
+    }
+  };
+
+  const content = getContent();
+
+  // Return with a unique key for AnimatePresence to track properly
+  // Using mode ensures each content type animates correctly
+  if (content === null) {
+    return null;
+  }
+
+  return (
+    <React.Fragment key={`island-content-${mode}`}>
+      {content}
+    </React.Fragment>
+  );
+};

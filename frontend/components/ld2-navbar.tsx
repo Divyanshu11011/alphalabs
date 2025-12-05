@@ -1,8 +1,9 @@
 'use client'
 
 import React from "react";
-import { Book, Menu, Sunset, Trees, Zap } from "lucide-react";
+import { Book, Menu, Sunset, Trees, X, Zap } from "lucide-react";
 import Link from "next/link";
+import { toast } from "sonner";
 
 import {
   Accordion,
@@ -265,30 +266,92 @@ const renderMenuItem = (item: MenuItem) => {
         <NavigationMenuContent>
           <ul className="w-80 p-3 bg-white border border-gray-200 shadow-lg rounded-md">
             <NavigationMenuLink>
-              {item.items.map((subItem) => (
-                <li key={subItem.title}>
-                  <Link
-                    className="flex select-none gap-4 rounded-md p-3 leading-none no-underline outline-none transition-colors hover:bg-gray-100 text-black"
-                    href={subItem.url}
-                  >
-                    {subItem.icon}
-                    <div>
-                      <div className="text-sm font-semibold text-black">
-                        {subItem.title}
+              {item.items.map((subItem) => {
+                // Show toast for Resources items (Help Center, Contact Us, Documentation)
+                const comingSoonItems = ["Help Center", "Contact Us", "Documentation"];
+                if (comingSoonItems.includes(subItem.title)) {
+                  const descriptions: Record<string, string> = {
+                    "Help Center": "Our Help Center is coming soon! We're working hard to bring you all the answers you need. 🚀",
+                    "Contact Us": "Contact options are coming soon! We can't wait to hear from you. 💬",
+                    "Documentation": "Documentation is coming soon! Complete guides and API reference on the way. 📚",
+                  };
+                  return (
+                    <li key={subItem.title}>
+                      <button
+                        className="flex select-none gap-4 rounded-md p-3 leading-none no-underline outline-none transition-colors hover:bg-gray-100 text-black w-full text-left"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          toast("Coming Soon", {
+                            description: descriptions[subItem.title],
+                            action: {
+                              label: "×",
+                              onClick: () => toast.dismiss(),
+                            },
+                          });
+                        }}
+                      >
+                        {subItem.icon}
+                        <div>
+                          <div className="text-sm font-semibold text-black">
+                            {subItem.title}
+                          </div>
+                          {subItem.description && (
+                            <p className="text-sm leading-snug text-gray-600">
+                              {subItem.description}
+                            </p>
+                          )}
+                        </div>
+                      </button>
+                    </li>
+                  );
+                }
+                return (
+                  <li key={subItem.title}>
+                    <Link
+                      className="flex select-none gap-4 rounded-md p-3 leading-none no-underline outline-none transition-colors hover:bg-gray-100 text-black"
+                      href={subItem.url}
+                    >
+                      {subItem.icon}
+                      <div>
+                        <div className="text-sm font-semibold text-black">
+                          {subItem.title}
+                        </div>
+                        {subItem.description && (
+                          <p className="text-sm leading-snug text-gray-600">
+                            {subItem.description}
+                          </p>
+                        )}
                       </div>
-                      {subItem.description && (
-                        <p className="text-sm leading-snug text-gray-600">
-                          {subItem.description}
-                        </p>
-                      )}
-                    </div>
-                  </Link>
-                </li>
-              ))}
+                    </Link>
+                  </li>
+                );
+              })}
             </NavigationMenuLink>
           </ul>
         </NavigationMenuContent>
       </NavigationMenuItem>
+    );
+  }
+
+  // Handle special "Pricing" link with toast
+  if (item.title === "Pricing") {
+    return (
+      <button
+        key={item.title}
+        className="group inline-flex h-10 w-max items-center justify-center rounded-md bg-transparent px-4 py-2 text-sm font-medium text-black transition-colors hover:bg-gray-100"
+        onClick={(e) => {
+          e.preventDefault();
+          toast("Coming Soon", {
+            description: "Pricing plans will be available soon!",
+            action: {
+              label: "×",
+              onClick: () => toast.dismiss(),
+            },
+          });
+        }}
+      >
+        {item.title}
+      </button>
     );
   }
 
@@ -311,32 +374,94 @@ const renderMobileMenuItem = (item: MenuItem) => {
           {item.title}
         </AccordionTrigger>
         <AccordionContent className="mt-2">
-          {item.items.map((subItem) => (
-            <Link
-              key={subItem.title}
-              className="flex select-none gap-4 rounded-md p-3 leading-none outline-none transition-colors hover:bg-gray-100 text-black"
-              href={subItem.url}
-            >
-              {subItem.icon}
-              <div>
-                <div className="text-sm font-semibold text-black">{subItem.title}</div>
-                {subItem.description && (
-                  <p className="text-sm leading-snug text-gray-600">
-                    {subItem.description}
-                  </p>
-                )}
-              </div>
-            </Link>
-          ))}
+          {item.items.map((subItem) => {
+            // Show toast for Resources items (Help Center, Contact Us, Documentation)
+            const comingSoonItems = ["Help Center", "Contact Us", "Documentation"];
+            if (comingSoonItems.includes(subItem.title)) {
+              const descriptions: Record<string, string> = {
+                "Help Center": "Our Help Center is coming soon! We're working hard to bring you all the answers you need. 🚀",
+                "Contact Us": "Contact options are coming soon! We can't wait to hear from you. 💬",
+                "Documentation": "Documentation is coming soon! Complete guides and API reference on the way. 📚",
+              };
+              return (
+                <button
+                  key={subItem.title}
+                  className="flex select-none gap-4 rounded-md p-3 leading-none outline-none transition-colors hover:bg-gray-100 text-black w-full text-left"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    toast("Coming Soon", {
+                      description: descriptions[subItem.title],
+                      action: {
+                        label: "×",
+                        onClick: () => toast.dismiss(),
+                      },
+                    });
+                  }}
+                >
+                  {subItem.icon}
+                  <div>
+                    <div className="text-sm font-semibold text-black">{subItem.title}</div>
+                    {subItem.description && (
+                      <p className="text-sm leading-snug text-gray-600">
+                        {subItem.description}
+                      </p>
+                    )}
+                  </div>
+                </button>
+              );
+            }
+            return (
+              <Link
+                key={subItem.title}
+                className="flex select-none gap-4 rounded-md p-3 leading-none outline-none transition-colors hover:bg-gray-100 text-black"
+                href={subItem.url}
+              >
+                {subItem.icon}
+                <div>
+                  <div className="text-sm font-semibold text-black">{subItem.title}</div>
+                  {subItem.description && (
+                    <p className="text-sm leading-snug text-gray-600">
+                      {subItem.description}
+                    </p>
+                  )}
+                </div>
+              </Link>
+            );
+          })}
         </AccordionContent>
       </AccordionItem>
     );
   }
 
+  // Handle special "Pricing" link with toast on mobile
+  if (item.title === "Pricing") {
+    return (
+      <React.Fragment key={item.title}>
+        <button
+          className="font-semibold text-black text-left"
+          onClick={(e) => {
+            e.preventDefault();
+            toast("Coming Soon", {
+              description: "Pricing plans will be available soon!",
+              action: {
+                label: "×",
+                onClick: () => toast.dismiss(),
+              },
+            });
+          }}
+        >
+          {item.title}
+        </button>
+      </React.Fragment>
+    );
+  }
+
   return (
-    <Link key={item.title} href={item.url} className="font-semibold text-black">
-      {item.title}
-    </Link>
+    <React.Fragment key={item.title}>
+      <Link href={item.url} className="font-semibold text-black">
+        {item.title}
+      </Link>
+    </React.Fragment>
   );
 };
 

@@ -13,6 +13,7 @@ import { StepDataBuffet } from "./step-data-buffet";
 import { StepStrategyPrompt } from "./step-strategy-prompt";
 import { useAgents } from "@/hooks/use-agents";
 import { useApiKeys } from "@/hooks/use-api-keys";
+import { useGlobalRefresh } from "@/lib/stores";
 import { toast } from "sonner";
 
 const steps = [
@@ -55,6 +56,7 @@ export function AgentCreationWizard() {
   const [isCreating, setIsCreating] = useState(false);
   const { createAgent } = useAgents();
   const { createApiKey } = useApiKeys();
+  const { refreshAll } = useGlobalRefresh();
 
   const updateFormData = (updates: Partial<AgentFormData>) => {
     setFormData((prev) => ({ ...prev, ...updates }));
@@ -91,7 +93,7 @@ export function AgentCreationWizard() {
 
   const handleCreate = async () => {
     if (isCreating) return;
-    
+
     setIsCreating(true);
     try {
       let apiKeyId = formData.apiKey;
@@ -103,8 +105,8 @@ export function AgentCreationWizard() {
           const newKey = await createApiKey({
             provider: "openrouter",
             api_key: formData.apiKey,
-            label: formData.saveApiKey 
-              ? `${formData.name} - OpenRouter` 
+            label: formData.saveApiKey
+              ? `${formData.name} - OpenRouter`
               : `Temp - ${formData.name}`,
             set_as_default: formData.saveApiKey,
           });
@@ -128,6 +130,7 @@ export function AgentCreationWizard() {
       });
 
       toast.success(`Agent "${formData.name}" created successfully!`);
+      refreshAll(); // Trigger global refresh for all stores
       router.push(`/dashboard/agents/${agent.id}`);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : "Failed to create agent";
@@ -168,8 +171,8 @@ export function AgentCreationWizard() {
                     currentStep > step.id
                       ? "border-primary bg-primary text-primary-foreground"
                       : currentStep === step.id
-                      ? "border-primary text-primary"
-                      : "border-border text-muted-foreground"
+                        ? "border-primary text-primary"
+                        : "border-border text-muted-foreground"
                   )}
                 >
                   {currentStep > step.id ? (
@@ -248,7 +251,7 @@ export function AgentCreationWizard() {
               disabled={!canProceed() || isCreating}
               className={cn(
                 currentStep === 4 &&
-                  "bg-primary text-primary-foreground hover:bg-primary/90"
+                "bg-primary text-primary-foreground hover:bg-primary/90"
               )}
             >
               {isCreating ? (
